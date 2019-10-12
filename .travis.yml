@@ -6,6 +6,10 @@ compiler:
 
 dist: xenial
 
+arch:
+  - amd64
+  - arm64
+
 os:
   - linux
 
@@ -37,74 +41,88 @@ env:
 
 matrix:
   include:
-  - env: DEF_LIB="static" OPTS="-Denable_kmods=false" AARCH64=1
+  - env: DEF_LIB="static" OPTS="-Denable_kmods=false"
+    arch: arm64
     compiler: gcc
     addons:
       apt:
         packages:
-          - *aarch64_packages
-  - env: DEF_LIB="shared" OPTS="-Denable_kmods=false" AARCH64=1
+          - *required_packages
+  - env: DEF_LIB="shared" OPTS="-Denable_kmods=false"
+    arch: arm64
     compiler: gcc
     addons:
       apt:
         packages:
-          - *aarch64_packages
-  - env: DEF_LIB="static" EXTRA_PACKAGES=1
-    compiler: gcc
-    addons:
-      apt:
-        packages:
-          - *extra_packages
-  - env: DEF_LIB="shared" EXTRA_PACKAGES=1 RUN_TESTS=1 BUILD_DOCS=1
-    compiler: gcc
-    addons:
-      apt:
-        packages:
-          - *extra_packages
-          - *doc_packages
-  - env: DEF_LIB="static" OPTS="-Denable_kmods=false" EXTRA_PACKAGES=1
-    compiler: gcc
-    addons:
-      apt:
-        packages:
-          - *extra_packages
-  - env: DEF_LIB="shared" OPTS="-Denable_kmods=false" EXTRA_PACKAGES=1
-    compiler: gcc
-    addons:
-      apt:
-        packages:
-          - *extra_packages
-  - env: DEF_LIB="static" EXTRA_PACKAGES=1
-    compiler: clang
-    addons:
-      apt:
-        packages:
-          - *extra_packages
-  - env: DEF_LIB="shared" EXTRA_PACKAGES=1
-    compiler: clang
-    addons:
-      apt:
-        packages:
-          - *extra_packages
-  - env: DEF_LIB="shared" EXTRA_PACKAGES=1 RUN_TESTS=1 BUILD_DOCS=1
-    compiler: clang
-    addons:
-      apt:
-        packages:
-          - *extra_packages
-          - *doc_packages
-  - env: DEF_LIB="static" OPTS="-Denable_kmods=false" EXTRA_PACKAGES=1
-    compiler: clang
-    addons:
-      apt:
-        packages:
-          - *extra_packages
-  - env: DEF_LIB="shared" OPTS="-Denable_kmods=false" EXTRA_PACKAGES=1
-    compiler: clang
-    addons:
-      apt:
-        packages:
-          - *extra_packages
+          - *required_packages
+#  - env: DEF_LIB="static" OPTS="-Denable_kmods=false" AARCH64=1
+#    compiler: gcc
+#    addons:
+#      apt:
+#        packages:
+#          - *aarch64_packages
+#  - env: DEF_LIB="shared" OPTS="-Denable_kmods=false" AARCH64=1
+#    compiler: gcc
+#    addons:
+#      apt:
+#        packages:
+#          - *aarch64_packages
+#  - env: DEF_LIB="static" EXTRA_PACKAGES=1
+#    compiler: gcc
+#    addons:
+#      apt:
+#        packages:
+#          - *extra_packages
+#  - env: DEF_LIB="shared" EXTRA_PACKAGES=1 RUN_TESTS=1 BUILD_DOCS=1
+#    compiler: gcc
+#    addons:
+#      apt:
+#        packages:
+#          - *extra_packages
+#          - *doc_packages
+#  - env: DEF_LIB="static" OPTS="-Denable_kmods=false" EXTRA_PACKAGES=1
+#    compiler: gcc
+#    addons:
+#      apt:
+#        packages:
+#          - *extra_packages
+#  - env: DEF_LIB="shared" OPTS="-Denable_kmods=false" EXTRA_PACKAGES=1
+#    compiler: gcc
+#    addons:
+#      apt:
+#        packages:
+#          - *extra_packages
+#  - env: DEF_LIB="static" EXTRA_PACKAGES=1
+#    compiler: clang
+#    addons:
+#      apt:
+#        packages:
+#          - *extra_packages
+#  - env: DEF_LIB="shared" EXTRA_PACKAGES=1
+#    compiler: clang
+#    addons:
+#      apt:
+#        packages:
+#          - *extra_packages
+#  - env: DEF_LIB="shared" EXTRA_PACKAGES=1 RUN_TESTS=1 BUILD_DOCS=1
+#    compiler: clang
+#    addons:
+#      apt:
+#        packages:
+#          - *extra_packages
+#          - *doc_packages
+#  - env: DEF_LIB="static" OPTS="-Denable_kmods=false" EXTRA_PACKAGES=1
+#    compiler: clang
+#    addons:
+#      apt:
+#        packages:
+#          - *extra_packages
+#  - env: DEF_LIB="shared" OPTS="-Denable_kmods=false" EXTRA_PACKAGES=1
+#    compiler: clang
+#    addons:
+#      apt:
+#        packages:
+#          - *extra_packages
 
 
 script: ./.ci/${TRAVIS_OS_NAME}-build.sh

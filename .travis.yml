@@ -2,12 +2,12 @@ language: c
 cache: ccache
 compiler:
   - gcc
-  - clang
+#  - clang
 
 dist: xenial
 
 arch:
-  - amd64
+#  - amd64
   - arm64
 
 os:
@@ -32,12 +32,12 @@ doc_packages: &doc_packages
 
 before_install: ./.ci/${TRAVIS_OS_NAME}-setup.sh
 
-env:
-  - DEF_LIB="static"
-  - DEF_LIB="shared"
-  - DEF_LIB="static" OPTS="-Denable_kmods=false"
-  - DEF_LIB="shared" OPTS="-Denable_kmods=false"
-  - DEF_LIB="shared" RUN_TESTS=1
+#env:
+#  - DEF_LIB="static"
+#  - DEF_LIB="shared"
+#  - DEF_LIB="static" OPTS="-Denable_kmods=false"
+#  - DEF_LIB="shared" OPTS="-Denable_kmods=false"
+#  - DEF_LIB="shared" RUN_TESTS=1
 
 matrix:
   include:

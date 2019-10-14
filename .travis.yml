@@ -5,6 +5,7 @@ compiler:
 #  - clang
 
 dist: xenial
+sudo: required
 
 arch:
 #  - amd64

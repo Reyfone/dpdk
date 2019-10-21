@@ -9,6 +9,7 @@ sudo python3 -m pip install --upgrade meson
 which lxc
 sudo apt-get install -y --no-install-suggests --no-install-recommends lxc
 which lxc
+echo $PATH
 sudo lxc config set vppjordan raw.lxc lxc.aa_profile=unconfined
 sudo lxc restart vppjordan
 #fi

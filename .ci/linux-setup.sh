@@ -6,9 +6,9 @@ sudo python3 -m pip install --upgrade meson
 # setup hugepages
 # turn off apparmor to set hugepage from LXD
 #if [[ "$TRAVIS_ARCH" == "arm64" ]]; then
-which lxc
+#which lxc
 sudo apt-get install -y --no-install-suggests --no-install-recommends lxc
-which lxc
+#which lxc
 echo $PATH
 sudo lxc config set vppjordan raw.lxc lxc.aa_profile=unconfined
 sudo lxc restart vppjordan

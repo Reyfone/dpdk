@@ -4,9 +4,11 @@
 sudo python3 -m pip install --upgrade meson
 
 # add Canonical Kernel Team PPA for newer version kernel header package
-sudo add-apt-repository -y ppa:canonical-kernel-team/ppa
-sudo apt-get -q update
-sudo apt-get -y install linux-headers-$(uname -r)
+if [[ "$TRAVIS_ARCH" == "amd64" ]] || [[ -z "$TRAVIS_ARCH" ]]; then
+    sudo add-apt-repository -y ppa:canonical-kernel-team/ppa
+    sudo apt-get -q update
+    sudo apt-get -y install linux-headers-$(uname -r)
+fi
 
 # setup hugepages
 # turn off apparmor to set hugepage from LXD

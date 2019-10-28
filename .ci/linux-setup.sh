@@ -3,6 +3,11 @@
 # need to install as 'root' since some of the unit tests won't run without it
 sudo python3 -m pip install --upgrade meson
 
+# add Canonical Kernel Team PPA for newer version kernel header package
+sudo add-apt-repository -y ppa:canonical-kernel-team/ppa
+sudo apt-get -q update
+sudo apt-get -y install linux-headers-$(uname -r)
+
 # setup hugepages
 # turn off apparmor to set hugepage from LXD
 #if [[ "$TRAVIS_ARCH" == "arm64" ]]; then

@@ -22,9 +22,11 @@ libraries = [
 	'gro', 'gso', 'ip_frag', 'jobstats',
 	'kni', 'latencystats', 'lpm', 'member',
 	'power', 'pdump', 'rawdev',
-	'rcu', 'reorder', 'sched', 'security', 'stack', 'vhost',
+	'rcu', 'rib', 'reorder', 'sched', 'security', 'stack', 'vhost',
 	# ipsec lib depends on net, crypto and security
 	'ipsec',
+	#fib lib depends on rib
+	'fib',
 	# add pkt framework libs which use other libs from above
 	'port', 'table', 'pipeline',
 	# flow_classify lib depends on pkt framework table lib
@@ -47,6 +49,7 @@ foreach l:libraries
 	name = l
 	version = 1
 	allow_experimental_apis = false
+	use_function_versioning = false
 	sources = []
 	headers = []
 	includes = []
@@ -66,6 +69,19 @@ foreach l:libraries
 	dir_name = 'librte_' + l
 	subdir(dir_name)
 
+	if build
+		shared_deps = ext_deps
+		static_deps = ext_deps
+		foreach d:deps
+			if not is_variable('shared_rte_' + d)
+				error('Missing internal dependency "@0@" for @1@ [@2@]'
+						.format(d, name, 'lib/' + dir_name))
+			endif
+			shared_deps += [get_variable('shared_rte_' + d)]
+			static_deps += [get_variable('static_rte_' + d)]
+		endforeach
+	endif
+
 	if not build
 		dpdk_libs_disabled += name
 		set_variable(name.underscorify() + '_disable_reason', reason)
@@ -82,19 +98,12 @@ foreach l:libraries
 			shared_dep = declare_dependency(include_directories: includes)
 			static_dep = shared_dep
 		else
-			shared_deps = ext_deps
-			static_deps = ext_deps
-			foreach d:deps
-				if not is_variable('shared_rte_' + d)
-					error('Missing dependency ' + d +
-						' for library ' + libname)
-				endif
-				shared_deps += [get_variable('shared_rte_' + d)]
-				static_deps += [get_variable('static_rte_' + d)]
-			endforeach
 
 			if allow_experimental_apis
 				cflags += '-DALLOW_EXPERIMENTAL_API'
+			endif
+			if use_function_versioning
+				cflags += '-DRTE_USE_FUNCTION_VERSIONING'
 			endif
 
 			if get_option('per_library_versions')
@@ -117,9 +126,15 @@ foreach l:libraries
 					include_directories: includes,
 					dependencies: static_deps)
 
-			# then use pre-build objects to build shared lib
-			sources = []
-			objs += static_lib.extract_all_objects(recursive: false)
+			if not use_function_versioning
+				# use pre-build objects to build shared lib
+				sources = []
+				objs += static_lib.extract_all_objects(recursive: false)
+			else
+				# for compat we need to rebuild with
+				# RTE_BUILD_SHARED_LIB defined
+				cflags += '-DRTE_BUILD_SHARED_LIB'
+			endif
 			version_map = '@0@/@1@/rte_@2@_version.map'.format(
 					meson.current_source_dir(), dir_name, name)
 			implib = dir_name + '.dll.a'
@@ -128,11 +143,21 @@ foreach l:libraries
 				command: [map_to_def_cmd, '@INPUT@', '@OUTPUT@'],
 				input: version_map,
 				output: 'rte_@0@_exports.def'.format(name))
+			lk_deps = [version_map, def_file]
 			if is_windows
 				lk_args = ['-Wl,/def:' + def_file.full_path(),
 					'-Wl,/implib:lib\\' + implib]
 			else
 				lk_args = ['-Wl,--version-script=' + version_map]
+				# on unix systems check the output of the
+				# experimental syms script, using it as a
+				# dependency of the .so build
+				lk_deps += custom_target(name + '.exp_chk',
+					command: [check_experimental_syms,
+						version_map, '@INPUT@'],
+					capture: true,
+					input: static_lib,
+					output: name + '.exp_chk')
 			endif
 
 			shared_lib = shared_library(libname,
@@ -142,7 +167,7 @@ foreach l:libraries
 					dependencies: shared_deps,
 					include_directories: includes,
 					link_args: lk_args,
-					link_depends: [version_map, def_file],
+					link_depends: lk_deps,
 					version: lib_version,
 					soversion: so_version,
 					install: true)
@@ -154,7 +179,9 @@ foreach l:libraries
 			dpdk_static_libraries = [static_lib] + dpdk_static_libraries
 		endif # sources.length() > 0
 
-		set_variable('shared_' + libname, shared_dep)
-		set_variable('static_' + libname, static_dep)
+		set_variable('shared_rte_' + name, shared_dep)
+		set_variable('static_rte_' + name, static_dep)
+		message('lib/@0@: Defining dependency "@1@"'.format(
+				dir_name, name))
 	endif # if build
 endforeach

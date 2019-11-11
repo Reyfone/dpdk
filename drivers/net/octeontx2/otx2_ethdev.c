@@ -91,6 +91,30 @@ nix_lf_alloc(struct otx2_eth_dev *dev, uint32_t nb_rxq, uint32_t nb_txq)
 }
 
 static int
+nix_lf_switch_header_type_enable(struct otx2_eth_dev *dev)
+{
+	struct otx2_mbox *mbox = dev->mbox;
+	struct npc_set_pkind *req;
+	struct msg_resp *rsp;
+	int rc;
+
+	if (dev->npc_flow.switch_header_type == 0)
+		return 0;
+
+	/* Notify AF about higig2 config */
+	req = otx2_mbox_alloc_msg_npc_set_pkind(mbox);
+	req->mode = dev->npc_flow.switch_header_type;
+	req->dir = PKIND_RX;
+	rc = otx2_mbox_process_msg(mbox, (void *)&rsp);
+	if (rc)
+		return rc;
+	req = otx2_mbox_alloc_msg_npc_set_pkind(mbox);
+	req->mode = dev->npc_flow.switch_header_type;
+	req->dir = PKIND_TX;
+	return otx2_mbox_process_msg(mbox, (void *)&rsp);
+}
+
+static int
 nix_lf_free(struct otx2_eth_dev *dev)
 {
 	struct otx2_mbox *mbox = dev->mbox;
@@ -120,7 +144,7 @@ otx2_cgx_rxtx_start(struct otx2_eth_dev *dev)
 {
 	struct otx2_mbox *mbox = dev->mbox;
 
-	if (otx2_dev_is_vf(dev))
+	if (otx2_dev_is_vf_or_sdp(dev))
 		return 0;
 
 	otx2_mbox_alloc_msg_cgx_start_rxtx(mbox);
@@ -133,7 +157,7 @@ otx2_cgx_rxtx_stop(struct otx2_eth_dev *dev)
 {
 	struct otx2_mbox *mbox = dev->mbox;
 
-	if (otx2_dev_is_vf(dev))
+	if (otx2_dev_is_vf_or_sdp(dev))
 		return 0;
 
 	otx2_mbox_alloc_msg_cgx_stop_rxtx(mbox);
@@ -166,7 +190,7 @@ nix_cgx_start_link_event(struct otx2_eth_dev *dev)
 {
 	struct otx2_mbox *mbox = dev->mbox;
 
-	if (otx2_dev_is_vf(dev))
+	if (otx2_dev_is_vf_or_sdp(dev))
 		return 0;
 
 	otx2_mbox_alloc_msg_cgx_start_linkevents(mbox);
@@ -179,7 +203,7 @@ cgx_intlbk_enable(struct otx2_eth_dev *dev, bool en)
 {
 	struct otx2_mbox *mbox = dev->mbox;
 
-	if (otx2_dev_is_vf(dev))
+	if (otx2_dev_is_vf_or_sdp(dev))
 		return 0;
 
 	if (en)
@@ -195,7 +219,7 @@ nix_cgx_stop_link_event(struct otx2_eth_dev *dev)
 {
 	struct otx2_mbox *mbox = dev->mbox;
 
-	if (otx2_dev_is_vf(dev))
+	if (otx2_dev_is_vf_or_sdp(dev))
 		return 0;
 
 	otx2_mbox_alloc_msg_cgx_stop_linkevents(mbox);
@@ -1583,6 +1607,7 @@ otx2_nix_configure(struct rte_eth_dev *eth_dev)
 	if (dev->configured == 1) {
 		otx2_nix_rxchan_bpid_cfg(eth_dev, false);
 		otx2_nix_vlan_fini(eth_dev);
+		otx2_nix_mc_addr_list_uninstall(eth_dev);
 		otx2_flow_free_all_resources(dev);
 		oxt2_nix_unregister_queue_irqs(eth_dev);
 		if (eth_dev->data->dev_conf.intr_conf.rxq)
@@ -1609,6 +1634,12 @@ otx2_nix_configure(struct rte_eth_dev *eth_dev)
 	if (rc) {
 		otx2_err("Failed to init nix_lf rc=%d", rc);
 		goto fail_offloads;
+	}
+
+	rc = nix_lf_switch_header_type_enable(dev);
+	if (rc) {
+		otx2_err("Failed to enable switch type nix_lf rc=%d", rc);
+		goto free_nix_lf;
 	}
 
 	rc = nix_setup_lso_formats(dev);
@@ -1678,6 +1709,12 @@ otx2_nix_configure(struct rte_eth_dev *eth_dev)
 		goto q_irq_fini;
 	}
 
+	rc = otx2_nix_mc_addr_list_install(eth_dev);
+	if (rc < 0) {
+		otx2_err("Failed to install mc address list rc=%d", rc);
+		goto cq_fini;
+	}
+
 	/*
 	 * Restore queue config when reconfigure followed by
 	 * reconfigure and no queue configure invoked from application case.
@@ -1685,7 +1722,7 @@ otx2_nix_configure(struct rte_eth_dev *eth_dev)
 	if (dev->configured == 1) {
 		rc = nix_restore_queue_cfg(eth_dev);
 		if (rc)
-			goto cq_fini;
+			goto uninstall_mc_list;
 	}
 
 	/* Update the mac address */
@@ -1709,6 +1746,8 @@ otx2_nix_configure(struct rte_eth_dev *eth_dev)
 	dev->configured_nb_tx_qs = data->nb_tx_queues;
 	return 0;
 
+uninstall_mc_list:
+	otx2_nix_mc_addr_list_uninstall(eth_dev);
 cq_fini:
 	oxt2_nix_unregister_cq_irqs(eth_dev);
 q_irq_fini:
@@ -1952,6 +1991,7 @@ static const struct eth_dev_ops otx2_eth_dev_ops = {
 	.mac_addr_add             = otx2_nix_mac_addr_add,
 	.mac_addr_remove          = otx2_nix_mac_addr_del,
 	.mac_addr_set             = otx2_nix_mac_addr_set,
+	.set_mc_addr_list         = otx2_nix_set_mc_addr_list,
 	.promiscuous_enable       = otx2_nix_promisc_enable,
 	.promiscuous_disable      = otx2_nix_promisc_disable,
 	.allmulticast_enable      = otx2_nix_allmulticast_enable,
@@ -2046,6 +2086,15 @@ otx2_eth_dev_lf_detach(struct otx2_mbox *mbox)
 	return otx2_mbox_process(mbox);
 }
 
+static bool
+otx2_eth_dev_is_sdp(struct rte_pci_device *pci_dev)
+{
+	if (pci_dev->id.device_id == PCI_DEVID_OCTEONTX2_RVU_SDP_PF ||
+	    pci_dev->id.device_id == PCI_DEVID_OCTEONTX2_RVU_SDP_VF)
+		return true;
+	return false;
+}
+
 static int
 otx2_eth_dev_init(struct rte_eth_dev *eth_dev)
 {
@@ -2089,6 +2138,10 @@ otx2_eth_dev_init(struct rte_eth_dev *eth_dev)
 			goto error;
 		}
 	}
+	if (otx2_eth_dev_is_sdp(pci_dev))
+		dev->sdp_link = true;
+	else
+		dev->sdp_link = false;
 	/* Device generic callbacks */
 	dev->ops = &otx2_dev_ops;
 	dev->eth_dev = eth_dev;
@@ -2169,6 +2222,8 @@ otx2_eth_dev_init(struct rte_eth_dev *eth_dev)
 	if (rc)
 		goto free_mac_addrs;
 
+	otx2_nix_mc_filter_init(dev);
+
 	otx2_nix_dbg("Port=%d pf=%d vf=%d ver=%s msix_off=%d hwcap=0x%" PRIx64
 		     " rxoffload_capa=0x%" PRIx64 " txoffload_capa=0x%" PRIx64,
 		     eth_dev->data->port_id, dev->pf, dev->vf,
@@ -2215,6 +2270,9 @@ otx2_eth_dev_uninit(struct rte_eth_dev *eth_dev, bool mbox_close)
 
 	/* Disable other rte_flow entries */
 	otx2_flow_fini(dev);
+
+	/* Free multicast filter list */
+	otx2_nix_mc_filter_fini(dev);
 
 	/* Disable PTP if already enabled */
 	if (otx2_ethdev_is_ptp_en(dev))
@@ -2370,6 +2428,14 @@ static const struct rte_pci_id pci_nix_map[] = {
 	{
 		RTE_PCI_DEVICE(PCI_VENDOR_ID_CAVIUM,
 			       PCI_DEVID_OCTEONTX2_RVU_AF_VF)
+	},
+	{
+		RTE_PCI_DEVICE(PCI_VENDOR_ID_CAVIUM,
+			       PCI_DEVID_OCTEONTX2_RVU_SDP_PF)
+	},
+	{
+		RTE_PCI_DEVICE(PCI_VENDOR_ID_CAVIUM,
+			       PCI_DEVID_OCTEONTX2_RVU_SDP_VF)
 	},
 	{
 		.vendor_id = 0,

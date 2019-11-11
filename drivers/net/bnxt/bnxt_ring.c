@@ -9,7 +9,6 @@
 #include <unistd.h>
 
 #include "bnxt.h"
-#include "bnxt_cpr.h"
 #include "bnxt_hwrm.h"
 #include "bnxt_ring.h"
 #include "bnxt_rxq.h"
@@ -39,15 +38,13 @@ void bnxt_free_ring(struct bnxt_ring *ring)
  * Ring groups
  */
 
-int bnxt_init_ring_grps(struct bnxt *bp)
+static void bnxt_init_ring_grps(struct bnxt *bp)
 {
 	unsigned int i;
 
 	for (i = 0; i < bp->max_ring_grps; i++)
 		memset(&bp->grp_info[i], (uint8_t)HWRM_NA_SIGNATURE,
 		       sizeof(struct bnxt_ring_grp_info));
-
-	return 0;
 }
 
 int bnxt_alloc_ring_grps(struct bnxt *bp)
@@ -77,6 +74,7 @@ int bnxt_alloc_ring_grps(struct bnxt *bp)
 				    "Failed to alloc grp info tbl.\n");
 			return -ENOMEM;
 		}
+		bnxt_init_ring_grps(bp);
 	}
 
 	return 0;
@@ -407,7 +405,7 @@ static int bnxt_alloc_cmpl_ring(struct bnxt *bp, int queue_index,
 {
 	struct bnxt_ring *cp_ring = cpr->cp_ring_struct;
 	uint32_t nq_ring_id = HWRM_NA_SIGNATURE;
-	int cp_ring_index = queue_index + BNXT_NUM_ASYNC_CPR(bp);
+	int cp_ring_index = queue_index + BNXT_RX_VEC_START;
 	struct bnxt_cp_ring_info *nqr = bp->rxtx_nq_ring;
 	uint8_t ring_type;
 	int rc = 0;
@@ -627,6 +625,9 @@ int bnxt_alloc_hwrm_rx_ring(struct bnxt *bp, int queue_index)
 		bnxt_db_write(&rxr->ag_db, rxr->ag_prod);
 	}
 	rxq->index = queue_index;
+#ifdef RTE_ARCH_X86
+	bnxt_rxq_vec_setup(rxq);
+#endif
 
 	return 0;
 

@@ -27,6 +27,9 @@
 #include <rte_udp.h>
 #include <rte_byteorder.h>
 #include <rte_esp.h>
+#include <rte_higig.h>
+#include <rte_mbuf.h>
+#include <rte_mbuf_dyn.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -417,7 +420,8 @@ enum rte_flow_item_type {
 	/**
 	 * [META]
 	 *
-	 * Matches a metadata value specified in mbuf metadata field.
+	 * Matches a metadata value.
+	 *
 	 * See struct rte_flow_item_meta.
 	 */
 	RTE_FLOW_ITEM_TYPE_META,
@@ -470,7 +474,65 @@ enum rte_flow_item_type {
 	 * See struct rte_flow_item_pppoe_proto_id.
 	 */
 	RTE_FLOW_ITEM_TYPE_PPPOE_PROTO_ID,
+
+	/**
+	 * Matches Network service header (NSH).
+	 * See struct rte_flow_item_nsh.
+	 *
+	 */
+	RTE_FLOW_ITEM_TYPE_NSH,
+
+	/**
+	 * Matches Internet Group Management Protocol (IGMP).
+	 * See struct rte_flow_item_igmp.
+	 *
+	 */
+	RTE_FLOW_ITEM_TYPE_IGMP,
+
+	/**
+	 * Matches IP Authentication Header (AH).
+	 * See struct rte_flow_item_ah.
+	 *
+	 */
+	RTE_FLOW_ITEM_TYPE_AH,
+
+	/**
+	 * Matches a HIGIG header.
+	 * see struct rte_flow_item_higig2_hdr.
+	 */
+	RTE_FLOW_ITEM_TYPE_HIGIG2,
+
+	/*
+	 * [META]
+	 *
+	 * Matches a tag value.
+	 *
+	 * See struct rte_flow_item_tag.
+	 */
+	RTE_FLOW_ITEM_TYPE_TAG,
 };
+
+/**
+ *
+ * RTE_FLOW_ITEM_TYPE_HIGIG2
+ * Matches higig2 header
+ */
+RTE_STD_C11
+struct rte_flow_item_higig2_hdr {
+	struct rte_higig2_hdr hdr;
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_HIGIG2. */
+#ifndef __cplusplus
+static const struct rte_flow_item_higig2_hdr rte_flow_item_higig2_hdr_mask = {
+	.hdr = {
+		.ppt1 = {
+			.classification = 0xffff,
+			.vid = 0xfff,
+		},
+	},
+};
+#endif
 
 /**
  * RTE_FLOW_ITEM_TYPE_ANY
@@ -1213,18 +1275,23 @@ rte_flow_item_icmp6_nd_opt_tla_eth_mask = {
 #endif
 
 /**
- * RTE_FLOW_ITEM_TYPE_META.
+ * RTE_FLOW_ITEM_TYPE_META
  *
- * Matches a specified metadata value.
+ * Matches a specified metadata value. On egress, metadata can be set
+ * either by mbuf dynamic metadata field with PKT_TX_DYNF_METADATA flag or
+ * RTE_FLOW_ACTION_TYPE_SET_META. On ingress, RTE_FLOW_ACTION_TYPE_SET_META
+ * sets metadata for a packet and the metadata will be reported via mbuf
+ * metadata dynamic field with PKT_RX_DYNF_METADATA flag. The dynamic mbuf
+ * field must be registered in advance by rte_flow_dynf_metadata_register().
  */
 struct rte_flow_item_meta {
-	rte_be32_t data;
+	uint32_t data;
 };
 
 /** Default mask for RTE_FLOW_ITEM_TYPE_META. */
 #ifndef __cplusplus
 static const struct rte_flow_item_meta rte_flow_item_meta_mask = {
-	.data = RTE_BE32(UINT32_MAX),
+	.data = UINT32_MAX,
 };
 #endif
 
@@ -1289,6 +1356,27 @@ rte_flow_item_pppoe_proto_id_mask = {
  * @warning
  * @b EXPERIMENTAL: this structure may change without prior notice
  *
+ * RTE_FLOW_ITEM_TYPE_TAG
+ *
+ * Matches a specified tag value at the specified index.
+ */
+struct rte_flow_item_tag {
+	uint32_t data;
+	uint8_t index;
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_TAG. */
+#ifndef __cplusplus
+static const struct rte_flow_item_tag rte_flow_item_tag_mask = {
+	.data = 0xffffffff,
+	.index = 0xff,
+};
+#endif
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this structure may change without prior notice
+ *
  * RTE_FLOW_ITEM_TYPE_MARK
  *
  * Matches an arbitrary integer value which was set using the ``MARK`` action
@@ -1306,6 +1394,92 @@ rte_flow_item_pppoe_proto_id_mask = {
 struct rte_flow_item_mark {
 	uint32_t id; /**< Integer value to match against. */
 };
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_MARK. */
+#ifndef __cplusplus
+static const struct rte_flow_item_mark rte_flow_item_mark_mask = {
+	.id = 0xffffffff,
+};
+#endif
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this structure may change without prior notice
+ *
+ * RTE_FLOW_ITEM_TYPE_NSH
+ *
+ * Match network service header (NSH), RFC 8300
+ *
+ */
+struct rte_flow_item_nsh {
+	uint32_t version:2;
+	uint32_t oam_pkt:1;
+	uint32_t reserved:1;
+	uint32_t ttl:6;
+	uint32_t length:6;
+	uint32_t reserved1:4;
+	uint32_t mdtype:4;
+	uint32_t next_proto:8;
+	uint32_t spi:24;
+	uint32_t sindex:8;
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_NSH. */
+#ifndef __cplusplus
+static const struct rte_flow_item_nsh rte_flow_item_nsh_mask = {
+	.mdtype = 0xf,
+	.next_proto = 0xff,
+	.spi = 0xffffff,
+	.sindex = 0xff,
+};
+#endif
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this structure may change without prior notice
+ *
+ * RTE_FLOW_ITEM_TYPE_IGMP
+ *
+ * Match Internet Group Management Protocol (IGMP), RFC 2236
+ *
+ */
+struct rte_flow_item_igmp {
+	uint32_t type:8;
+	uint32_t max_resp_time:8;
+	uint32_t checksum:16;
+	uint32_t group_addr;
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_IGMP. */
+#ifndef __cplusplus
+static const struct rte_flow_item_igmp rte_flow_item_igmp_mask = {
+	.group_addr = 0xffffffff,
+};
+#endif
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this structure may change without prior notice
+ *
+ * RTE_FLOW_ITEM_TYPE_AH
+ *
+ * Match IP Authentication Header (AH), RFC 4302
+ *
+ */
+struct rte_flow_item_ah {
+	uint32_t next_hdr:8;
+	uint32_t payload_len:8;
+	uint32_t reserved:16;
+	uint32_t spi;
+	uint32_t seq_num;
+};
+
+/** Default mask for RTE_FLOW_ITEM_TYPE_AH. */
+#ifndef __cplusplus
+static const struct rte_flow_item_ah rte_flow_item_ah_mask = {
+	.spi = 0xffffffff,
+};
+#endif
 
 /**
  * Matching pattern item definition.
@@ -1813,6 +1987,23 @@ enum rte_flow_action_type {
 	 * undefined behavior.
 	 */
 	RTE_FLOW_ACTION_TYPE_DEC_TCP_ACK,
+
+	/**
+	 * Set Tag.
+	 *
+	 * Tag is for internal flow usage only and
+	 * is not delivered to the application.
+	 *
+	 * See struct rte_flow_action_set_tag.
+	 */
+	RTE_FLOW_ACTION_TYPE_SET_TAG,
+
+	/**
+	 * Set metadata on ingress or egress path.
+	 *
+	 * See struct rte_flow_action_set_meta.
+	 */
+	RTE_FLOW_ACTION_TYPE_SET_META,
 };
 
 /**
@@ -2300,6 +2491,73 @@ struct rte_flow_action_set_mac {
 	uint8_t mac_addr[RTE_ETHER_ADDR_LEN];
 };
 
+/**
+ * @warning
+ * @b EXPERIMENTAL: this structure may change without prior notice
+ *
+ * RTE_FLOW_ACTION_TYPE_SET_TAG
+ *
+ * Set a tag which is a transient data used during flow matching. This is not
+ * delivered to application. Multiple tags are supported by specifying index.
+ */
+struct rte_flow_action_set_tag {
+	uint32_t data;
+	uint32_t mask;
+	uint8_t index;
+};
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this structure may change without prior notice
+ *
+ * RTE_FLOW_ACTION_TYPE_SET_META
+ *
+ * Set metadata. Metadata set by mbuf metadata dynamic field with
+ * PKT_TX_DYNF_DATA flag on egress will be overridden by this action. On
+ * ingress, the metadata will be carried by mbuf metadata dynamic field
+ * with PKT_RX_DYNF_METADATA flag if set.  The dynamic mbuf field must be
+ * registered in advance by rte_flow_dynf_metadata_register().
+ *
+ * Altering partial bits is supported with mask. For bits which have never
+ * been set, unpredictable value will be seen depending on driver
+ * implementation. For loopback/hairpin packet, metadata set on Rx/Tx may
+ * or may not be propagated to the other path depending on HW capability.
+ *
+ * RTE_FLOW_ITEM_TYPE_META matches metadata.
+ */
+struct rte_flow_action_set_meta {
+	uint32_t data;
+	uint32_t mask;
+};
+
+/* Mbuf dynamic field offset for metadata. */
+extern int rte_flow_dynf_metadata_offs;
+
+/* Mbuf dynamic field flag mask for metadata. */
+extern uint64_t rte_flow_dynf_metadata_mask;
+
+/* Mbuf dynamic field pointer for metadata. */
+#define RTE_FLOW_DYNF_METADATA(m) \
+	RTE_MBUF_DYNFIELD((m), rte_flow_dynf_metadata_offs, uint32_t *)
+
+/* Mbuf dynamic flags for metadata. */
+#define PKT_RX_DYNF_METADATA (rte_flow_dynf_metadata_mask)
+#define PKT_TX_DYNF_METADATA (rte_flow_dynf_metadata_mask)
+
+__rte_experimental
+static inline uint32_t
+rte_flow_dynf_metadata_get(struct rte_mbuf *m)
+{
+	return *RTE_FLOW_DYNF_METADATA(m);
+}
+
+__rte_experimental
+static inline void
+rte_flow_dynf_metadata_set(struct rte_mbuf *m, uint32_t v)
+{
+	*RTE_FLOW_DYNF_METADATA(m) = v;
+}
+
 /*
  * Definition of a single action.
  *
@@ -2531,6 +2789,33 @@ enum rte_flow_conv_op {
 	 */
 	RTE_FLOW_CONV_OP_ACTION_NAME_PTR,
 };
+
+/**
+ * Check if mbuf dynamic field for metadata is registered.
+ *
+ * @return
+ *   True if registered, false otherwise.
+ */
+__rte_experimental
+static inline int
+rte_flow_dynf_metadata_avail(void)
+{
+	return !!rte_flow_dynf_metadata_mask;
+}
+
+/**
+ * Register mbuf dynamic field and flag for metadata.
+ *
+ * This function must be called prior to use SET_META action in order to
+ * register the dynamic mbuf field. Otherwise, the data cannot be delivered to
+ * application.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+__rte_experimental
+int
+rte_flow_dynf_metadata_register(void);
 
 /**
  * Check whether a flow rule can be created on a given port.

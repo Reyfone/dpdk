@@ -465,8 +465,8 @@ virtio_init_queue(struct rte_eth_dev *dev, uint16_t vtpci_queue_idx)
 		return -EINVAL;
 	}
 
-	if (!rte_is_power_of_2(vq_size)) {
-		PMD_INIT_LOG(ERR, "virtqueue size is not powerof 2");
+	if (!vtpci_packed_queue(hw) && !rte_is_power_of_2(vq_size)) {
+		PMD_INIT_LOG(ERR, "split virtqueue size is not powerof 2");
 		return -EINVAL;
 	}
 
@@ -1995,11 +1995,6 @@ exit:
 static int eth_virtio_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	struct rte_pci_device *pci_dev)
 {
-	if (rte_eal_iopl_init() != 0) {
-		PMD_INIT_LOG(ERR, "IOPL call failed - cannot use virtio PMD");
-		return 1;
-	}
-
 	/* virtio pmd skips probe if device needs to work in vdpa mode */
 	if (vdpa_mode_selected(pci_dev->device.devargs))
 		return 1;
@@ -2070,6 +2065,20 @@ virtio_dev_configure(struct rte_eth_dev *dev)
 
 	PMD_INIT_LOG(DEBUG, "configure");
 	req_features = VIRTIO_PMD_DEFAULT_GUEST_FEATURES;
+
+	if (rxmode->mq_mode != ETH_MQ_RX_NONE) {
+		PMD_DRV_LOG(ERR,
+			"Unsupported Rx multi queue mode %d",
+			rxmode->mq_mode);
+		return -EINVAL;
+	}
+
+	if (txmode->mq_mode != ETH_MQ_TX_NONE) {
+		PMD_DRV_LOG(ERR,
+			"Unsupported Tx multi queue mode %d",
+			txmode->mq_mode);
+		return -EINVAL;
+	}
 
 	if (dev->data->dev_conf.intr_conf.rxq) {
 		ret = virtio_init_device(dev, hw->req_guest_features);

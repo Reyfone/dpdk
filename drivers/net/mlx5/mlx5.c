@@ -178,6 +178,124 @@ struct mlx5_dev_spawn_data {
 static LIST_HEAD(, mlx5_ibv_shared) mlx5_ibv_list = LIST_HEAD_INITIALIZER();
 static pthread_mutex_t mlx5_ibv_list_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+#define MLX5_FLOW_MIN_ID_POOL_SIZE 512
+#define MLX5_ID_GENERATION_ARRAY_FACTOR 16
+
+/**
+ * Allocate ID pool structure.
+ *
+ * @return
+ *   Pointer to pool object, NULL value otherwise.
+ */
+struct mlx5_flow_id_pool *
+mlx5_flow_id_pool_alloc(void)
+{
+	struct mlx5_flow_id_pool *pool;
+	void *mem;
+
+	pool = rte_zmalloc("id pool allocation", sizeof(*pool),
+			   RTE_CACHE_LINE_SIZE);
+	if (!pool) {
+		DRV_LOG(ERR, "can't allocate id pool");
+		rte_errno  = ENOMEM;
+		return NULL;
+	}
+	mem = rte_zmalloc("", MLX5_FLOW_MIN_ID_POOL_SIZE * sizeof(uint32_t),
+			  RTE_CACHE_LINE_SIZE);
+	if (!mem) {
+		DRV_LOG(ERR, "can't allocate mem for id pool");
+		rte_errno  = ENOMEM;
+		goto error;
+	}
+	pool->free_arr = mem;
+	pool->curr = pool->free_arr;
+	pool->last = pool->free_arr + MLX5_FLOW_MIN_ID_POOL_SIZE;
+	pool->base_index = 0;
+	return pool;
+error:
+	rte_free(pool);
+	return NULL;
+}
+
+/**
+ * Release ID pool structure.
+ *
+ * @param[in] pool
+ *   Pointer to flow id pool object to free.
+ */
+void
+mlx5_flow_id_pool_release(struct mlx5_flow_id_pool *pool)
+{
+	rte_free(pool->free_arr);
+	rte_free(pool);
+}
+
+/**
+ * Generate ID.
+ *
+ * @param[in] pool
+ *   Pointer to flow id pool.
+ * @param[out] id
+ *   The generated ID.
+ *
+ * @return
+ *   0 on success, error value otherwise.
+ */
+uint32_t
+mlx5_flow_id_get(struct mlx5_flow_id_pool *pool, uint32_t *id)
+{
+	if (pool->curr == pool->free_arr) {
+		if (pool->base_index == UINT32_MAX) {
+			rte_errno  = ENOMEM;
+			DRV_LOG(ERR, "no free id");
+			return -rte_errno;
+		}
+		*id = ++pool->base_index;
+		return 0;
+	}
+	*id = *(--pool->curr);
+	return 0;
+}
+
+/**
+ * Release ID.
+ *
+ * @param[in] pool
+ *   Pointer to flow id pool.
+ * @param[out] id
+ *   The generated ID.
+ *
+ * @return
+ *   0 on success, error value otherwise.
+ */
+uint32_t
+mlx5_flow_id_release(struct mlx5_flow_id_pool *pool, uint32_t id)
+{
+	uint32_t size;
+	uint32_t size2;
+	void *mem;
+
+	if (pool->curr == pool->last) {
+		size = pool->curr - pool->free_arr;
+		size2 = size * MLX5_ID_GENERATION_ARRAY_FACTOR;
+		assert(size2 > size);
+		mem = rte_malloc("", size2 * sizeof(uint32_t), 0);
+		if (!mem) {
+			DRV_LOG(ERR, "can't allocate mem for id pool");
+			rte_errno  = ENOMEM;
+			return -rte_errno;
+		}
+		memcpy(mem, pool->free_arr, size * sizeof(uint32_t));
+		rte_free(pool->free_arr);
+		pool->free_arr = mem;
+		pool->curr = pool->free_arr + size;
+		pool->last = pool->free_arr + size2;
+	}
+	*pool->curr = id;
+	pool->curr++;
+	return 0;
+}
+
 /**
  * Initialize the counters management structure.
  *
@@ -324,8 +442,11 @@ mlx5_alloc_shared_ibctx(const struct mlx5_dev_spawn_data *spawn)
 	struct mlx5_ibv_shared *sh;
 	int err = 0;
 	uint32_t i;
+#ifdef HAVE_IBV_FLOW_DV_SUPPORT
+	struct mlx5_devx_tis_attr tis_attr = { 0 };
+#endif
 
-	assert(spawn);
+assert(spawn);
 	/* Secondary process should not create the shared context. */
 	assert(rte_eal_process_type() == RTE_PROC_PRIMARY);
 	pthread_mutex_lock(&mlx5_ibv_list_mutex);
@@ -379,8 +500,10 @@ mlx5_alloc_shared_ibctx(const struct mlx5_dev_spawn_data *spawn)
 	 * there is no interrupt subhandler installed for
 	 * the given port index i.
 	 */
-	for (i = 0; i < sh->max_port; i++)
+	for (i = 0; i < sh->max_port; i++) {
 		sh->port[i].ih_port_id = RTE_MAX_ETHPORTS;
+		sh->port[i].devx_ih_port_id = RTE_MAX_ETHPORTS;
+	}
 	sh->pd = mlx5_glue->alloc_pd(sh->ctx);
 	if (sh->pd == NULL) {
 		DRV_LOG(ERR, "PD allocation failure");
@@ -388,9 +511,30 @@ mlx5_alloc_shared_ibctx(const struct mlx5_dev_spawn_data *spawn)
 		goto error;
 	}
 #ifdef HAVE_IBV_FLOW_DV_SUPPORT
-	err = mlx5_get_pdn(sh->pd, &sh->pdn);
-	if (err) {
-		DRV_LOG(ERR, "Fail to extract pdn from PD");
+	if (sh->devx) {
+		err = mlx5_get_pdn(sh->pd, &sh->pdn);
+		if (err) {
+			DRV_LOG(ERR, "Fail to extract pdn from PD");
+			goto error;
+		}
+		sh->td = mlx5_devx_cmd_create_td(sh->ctx);
+		if (!sh->td) {
+			DRV_LOG(ERR, "TD allocation failure");
+			err = ENOMEM;
+			goto error;
+		}
+		tis_attr.transport_domain = sh->td->id;
+		sh->tis = mlx5_devx_cmd_create_tis(sh->ctx, &tis_attr);
+		if (!sh->tis) {
+			DRV_LOG(ERR, "TIS allocation failure");
+			err = ENOMEM;
+			goto error;
+		}
+	}
+	sh->flow_id_pool = mlx5_flow_id_pool_alloc();
+	if (!sh->flow_id_pool) {
+		DRV_LOG(ERR, "can't create flow id pool");
+		err = ENOMEM;
 		goto error;
 	}
 #endif /* HAVE_IBV_FLOW_DV_SUPPORT */
@@ -424,10 +568,16 @@ exit:
 error:
 	pthread_mutex_unlock(&mlx5_ibv_list_mutex);
 	assert(sh);
+	if (sh->tis)
+		claim_zero(mlx5_devx_cmd_destroy(sh->tis));
+	if (sh->td)
+		claim_zero(mlx5_devx_cmd_destroy(sh->td));
 	if (sh->pd)
 		claim_zero(mlx5_glue->dealloc_pd(sh->pd));
 	if (sh->ctx)
 		claim_zero(mlx5_glue->close_device(sh->ctx));
+	if (sh->flow_id_pool)
+		mlx5_flow_id_pool_release(sh->flow_id_pool);
 	rte_free(sh);
 	assert(err > 0);
 	rte_errno = err;
@@ -481,11 +631,26 @@ mlx5_free_shared_ibctx(struct mlx5_ibv_shared *sh)
 	if (sh->intr_cnt)
 		mlx5_intr_callback_unregister
 			(&sh->intr_handle, mlx5_dev_interrupt_handler, sh);
+#ifdef HAVE_MLX5_DEVX_ASYNC_SUPPORT
+	if (sh->devx_intr_cnt) {
+		if (sh->intr_handle_devx.fd)
+			rte_intr_callback_unregister(&sh->intr_handle_devx,
+					  mlx5_dev_interrupt_handler_devx, sh);
+		if (sh->devx_comp)
+			mlx5dv_devx_destroy_cmd_comp(sh->devx_comp);
+	}
+#endif
 	pthread_mutex_destroy(&sh->intr_mutex);
 	if (sh->pd)
 		claim_zero(mlx5_glue->dealloc_pd(sh->pd));
+	if (sh->tis)
+		claim_zero(mlx5_devx_cmd_destroy(sh->tis));
+	if (sh->td)
+		claim_zero(mlx5_devx_cmd_destroy(sh->td));
 	if (sh->ctx)
 		claim_zero(mlx5_glue->close_device(sh->ctx));
+	if (sh->flow_id_pool)
+		mlx5_flow_id_pool_release(sh->flow_id_pool);
 	rte_free(sh);
 exit:
 	pthread_mutex_unlock(&mlx5_ibv_list_mutex);
@@ -654,7 +819,7 @@ mlx5_init_shared_data(void)
 						 SOCKET_ID_ANY, 0);
 			if (mz == NULL) {
 				DRV_LOG(ERR,
-					"Cannot allocate mlx5 shared data\n");
+					"Cannot allocate mlx5 shared data");
 				ret = -rte_errno;
 				goto error;
 			}
@@ -666,7 +831,7 @@ mlx5_init_shared_data(void)
 			mz = rte_memzone_lookup(MZ_MLX5_PMD_SHARED_DATA);
 			if (mz == NULL) {
 				DRV_LOG(ERR,
-					"Cannot attach mlx5 shared data\n");
+					"Cannot attach mlx5 shared data");
 				ret = -rte_errno;
 				goto error;
 			}
@@ -845,6 +1010,7 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 		((priv->sh->ctx != NULL) ? priv->sh->ctx->device->name : ""));
 	/* In case mlx5_dev_stop() has not been called. */
 	mlx5_dev_interrupt_handler_uninstall(dev);
+	mlx5_dev_interrupt_handler_devx_uninstall(dev);
 	mlx5_traffic_disable(dev);
 	mlx5_flow_flush(dev, NULL);
 	/* Prevent crashes when queues are still in use. */
@@ -910,7 +1076,7 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 	if (ret)
 		DRV_LOG(WARNING, "port %u some Rx queues still remain",
 			dev->data->port_id);
-	ret = mlx5_txq_ibv_verify(dev);
+	ret = mlx5_txq_obj_verify(dev);
 	if (ret)
 		DRV_LOG(WARNING, "port %u some Verbs Tx queue still remain",
 			dev->data->port_id);
@@ -973,7 +1139,9 @@ const struct eth_dev_ops mlx5_dev_ops = {
 	.dev_supported_ptypes_get = mlx5_dev_supported_ptypes_get,
 	.vlan_filter_set = mlx5_vlan_filter_set,
 	.rx_queue_setup = mlx5_rx_queue_setup,
+	.rx_hairpin_queue_setup = mlx5_rx_hairpin_queue_setup,
 	.tx_queue_setup = mlx5_tx_queue_setup,
+	.tx_hairpin_queue_setup = mlx5_tx_hairpin_queue_setup,
 	.rx_queue_release = mlx5_rx_queue_release,
 	.tx_queue_release = mlx5_tx_queue_release,
 	.flow_ctrl_get = mlx5_dev_get_flow_ctrl,
@@ -999,6 +1167,7 @@ const struct eth_dev_ops mlx5_dev_ops = {
 	.udp_tunnel_port_add  = mlx5_udp_tunnel_port_add,
 	.get_module_info = mlx5_get_module_info,
 	.get_module_eeprom = mlx5_get_module_eeprom,
+	.hairpin_cap_get = mlx5_hairpin_cap_get,
 };
 
 /* Available operations from secondary process. */
@@ -1039,7 +1208,9 @@ const struct eth_dev_ops mlx5_dev_ops_isolate = {
 	.dev_supported_ptypes_get = mlx5_dev_supported_ptypes_get,
 	.vlan_filter_set = mlx5_vlan_filter_set,
 	.rx_queue_setup = mlx5_rx_queue_setup,
+	.rx_hairpin_queue_setup = mlx5_rx_hairpin_queue_setup,
 	.tx_queue_setup = mlx5_tx_queue_setup,
+	.tx_hairpin_queue_setup = mlx5_tx_hairpin_queue_setup,
 	.rx_queue_release = mlx5_rx_queue_release,
 	.tx_queue_release = mlx5_tx_queue_release,
 	.flow_ctrl_get = mlx5_dev_get_flow_ctrl,
@@ -1059,6 +1230,7 @@ const struct eth_dev_ops mlx5_dev_ops_isolate = {
 	.is_removed = mlx5_is_removed,
 	.get_module_info = mlx5_get_module_info,
 	.get_module_eeprom = mlx5_get_module_eeprom,
+	.hairpin_cap_get = mlx5_hairpin_cap_get,
 };
 
 /**
@@ -1847,7 +2019,7 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 			      MLX5DV_DEVX_PORT_MATCH_REG_C_0;
 	err = mlx5_glue->devx_port_query(sh->ctx, spawn->ibv_port, &devx_port);
 	if (err) {
-		DRV_LOG(WARNING, "can't query devx port %d on device %s\n",
+		DRV_LOG(WARNING, "can't query devx port %d on device %s",
 			spawn->ibv_port, spawn->ibv_dev->name);
 		devx_port.comp_mask = 0;
 	}
@@ -1856,14 +2028,14 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 		priv->vport_meta_mask = devx_port.reg_c_0.mask;
 		if (!priv->vport_meta_mask) {
 			DRV_LOG(ERR, "vport zero mask for port %d"
-				     " on bonding device %s\n",
+				     " on bonding device %s",
 				     spawn->ibv_port, spawn->ibv_dev->name);
 			err = ENOTSUP;
 			goto error;
 		}
 		if (priv->vport_meta_tag & ~priv->vport_meta_mask) {
 			DRV_LOG(ERR, "invalid vport tag for port %d"
-				     " on bonding device %s\n",
+				     " on bonding device %s",
 				     spawn->ibv_port, spawn->ibv_dev->name);
 			err = ENOTSUP;
 			goto error;
@@ -1872,7 +2044,7 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 		priv->vport_id = devx_port.vport_num;
 	} else if (spawn->pf_bond >= 0) {
 		DRV_LOG(ERR, "can't deduce vport index for port %d"
-			     " on bonding device %s\n",
+			     " on bonding device %s",
 			     spawn->ibv_port, spawn->ibv_dev->name);
 		err = ENOTSUP;
 		goto error;
@@ -2019,9 +2191,10 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 		priv->counter_fallback = 1;
 #endif
 		if (priv->counter_fallback)
-			DRV_LOG(INFO, "Use fall-back DV counter management\n");
+			DRV_LOG(INFO, "Use fall-back DV counter management");
 		/* Check for LRO support. */
-		if (config.dest_tir && config.hca_attr.lro_cap) {
+		if (config.dest_tir && config.hca_attr.lro_cap &&
+		    config.dv_flow_en) {
 			/* TBD check tunnel lro caps. */
 			config.lro.supported = config.hca_attr.lro_cap;
 			DRV_LOG(DEBUG, "Device supports LRO");
@@ -2718,6 +2891,7 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	case PCI_DEVICE_ID_MELLANOX_CONNECTX5EXVF:
 	case PCI_DEVICE_ID_MELLANOX_CONNECTX5BFVF:
 	case PCI_DEVICE_ID_MELLANOX_CONNECTX6VF:
+	case PCI_DEVICE_ID_MELLANOX_CONNECTX6DXVF:
 		dev_config.vf = 1;
 		break;
 	default:
@@ -2739,6 +2913,7 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		rte_eth_copy_pci_info(list[i].eth_dev, pci_dev);
 		/* Restore non-PCI flags cleared by the above call. */
 		list[i].eth_dev->data->dev_flags |= restore;
+		mlx5_dev_interrupt_handler_devx_install(list[i].eth_dev);
 		rte_eth_dev_probing_finish(list[i].eth_dev);
 	}
 	if (i != ns) {
@@ -2885,6 +3060,14 @@ static const struct rte_pci_id mlx5_pci_id_map[] = {
 	{
 		RTE_PCI_DEVICE(PCI_VENDOR_ID_MELLANOX,
 				PCI_DEVICE_ID_MELLANOX_CONNECTX6VF)
+	},
+	{
+		RTE_PCI_DEVICE(PCI_VENDOR_ID_MELLANOX,
+				PCI_DEVICE_ID_MELLANOX_CONNECTX6DX)
+	},
+	{
+		RTE_PCI_DEVICE(PCI_VENDOR_ID_MELLANOX,
+				PCI_DEVICE_ID_MELLANOX_CONNECTX6DXVF)
 	},
 	{
 		.vendor_id = 0

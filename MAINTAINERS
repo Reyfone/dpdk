@@ -32,6 +32,10 @@ M: Ferruh Yigit <ferruh.yigit@intel.com>
 M: Andrew Rybchenko <arybchenko@solarflare.com>
 T: git://dpdk.org/next/dpdk-next-net
 
+Next-net-brcm Tree
+M: Ajit Khaparde <ajit.khaparde@broadcom.com>
+T: git://dpdk.org/next/dpdk-next-net-brcm
+
 Next-net-intel Tree
 M: Qi Zhang <qi.z.zhang@intel.com>
 M: Xiaolong Ye <xiaolong.ye@intel.com>
@@ -132,6 +136,8 @@ F: .ci/
 
 ABI versioning
 M: Neil Horman <nhorman@tuxdriver.com>
+F: lib/librte_eal/common/include/rte_compat.h
+F: lib/librte_eal/common/include/rte_function_versioning.h
 F: doc/guides/rel_notes/deprecation.rst
 F: devtools/validate-abi.sh
 F: devtools/check-symbol-change.sh
@@ -251,6 +257,7 @@ M: Gavin Hu <gavin.hu@arm.com>
 F: lib/librte_eal/common/include/arch/arm/*_64.h
 F: lib/librte_net/net_crc_neon.h
 F: lib/librte_acl/acl_run_neon.*
+F: lib/librte_bpf/bpf_jit_arm64.c
 F: lib/librte_lpm/rte_lpm_neon.h
 F: lib/librte_hash/rte*_arm64.h
 F: lib/librte_efd/rte*_arm64.h
@@ -564,6 +571,7 @@ F: doc/guides/nics/features/ark.ini
 Broadcom bnxt
 M: Ajit Khaparde <ajit.khaparde@broadcom.com>
 M: Somnath Kotur <somnath.kotur@broadcom.com>
+T: git://dpdk.org/next/dpdk-next-net-brcm
 F: drivers/net/bnxt/
 F: doc/guides/nics/bnxt.rst
 F: doc/guides/nics/features/bnxt.ini
@@ -787,6 +795,13 @@ F: drivers/net/enetc/
 F: doc/guides/nics/enetc.rst
 F: doc/guides/nics/features/enetc.ini
 
+NXP pfe
+M: Gagandeep Singh <g.singh@nxp.com>
+M: Akhil Goyal <akhil.goyal@nxp.com>
+F: doc/guides/nics/pfe.rst
+F: drivers/net/pfe/
+F: doc/guides/nics/features/pfe.ini
+
 QLogic bnx2x
 M: Rasesh Mody <rmody@marvell.com>
 M: Shahed Shaikh <shshaikh@marvell.com>
@@ -824,8 +839,6 @@ F: lib/librte_vhost/
 F: doc/guides/prog_guide/vhost_lib.rst
 F: examples/vhost/
 F: doc/guides/sample_app_ug/vhost.rst
-F: examples/vhost_scsi/
-F: doc/guides/sample_app_ug/vhost_scsi.rst
 F: examples/vhost_crypto/
 F: examples/vdpa/
 F: doc/guides/sample_app_ug/vdpa.rst
@@ -979,6 +992,13 @@ F: drivers/crypto/nitrox/
 F: doc/guides/cryptodevs/nitrox.rst
 F: doc/guides/cryptodevs/features/nitrox.ini
 
+Marvell OCTEON TX2 crypto
+M: Ankur Dwivedi <adwivedi@marvell.com>
+M: Anoob Joseph <anoobj@marvell.com>
+F: drivers/crypto/octeontx2/
+F: doc/guides/cryptodevs/octeontx2.rst
+F: doc/guides/cryptodevs/features/octeontx2.ini
+
 Null Crypto
 M: Declan Doherty <declan.doherty@intel.com>
 F: drivers/crypto/null/
@@ -1123,6 +1143,8 @@ IOAT Rawdev
 M: Bruce Richardson <bruce.richardson@intel.com>
 F: drivers/raw/ioat/
 F: doc/guides/rawdevs/ioat.rst
+F: examples/ioat/
+F: doc/guides/sample_app_ug/ioat.rst
 
 NXP DPAA2 QDMA
 M: Nipun Gupta <nipun.gupta@nxp.com>
@@ -1188,6 +1210,9 @@ F: lib/librte_ipsec/
 M: Bernard Iremonger <bernard.iremonger@intel.com>
 F: app/test/test_ipsec.c
 F: doc/guides/prog_guide/ipsec_lib.rst
+M: Vladimir Medvedkin <vladimir.medvedkin@intel.com>
+F: app/test/test_ipsec_sad.c
+F: app/test-sad/
 
 Flow Classify - EXPERIMENTAL
 M: Bernard Iremonger <bernard.iremonger@intel.com>
@@ -1291,6 +1316,13 @@ M: Sameh Gobriel <sameh.gobriel@intel.com>
 F: lib/librte_member/
 F: doc/guides/prog_guide/member_lib.rst
 F: app/test/test_member*
+
+RIB/FIB - EXPERIMENTAL
+M: Vladimir Medvedkin <vladimir.medvedkin@intel.com>
+F: lib/librte_rib/
+F: app/test/test_rib*
+F: lib/librte_fib/
+F: app/test/test_fib*
 
 Traffic metering
 M: Cristian Dumitrescu <cristian.dumitrescu@intel.com>
@@ -1443,9 +1475,6 @@ Other Example Applications
 F: examples/ethtool/
 F: doc/guides/sample_app_ug/ethtool.rst
 
-F: examples/exception_path/
-F: doc/guides/sample_app_ug/exception_path.rst
-
 M: Marko Kovacevic <marko.kovacevic@intel.com>
 F: examples/fips_validation/
 F: doc/guides/sample_app_ug/fips_validation.rst
@@ -1474,20 +1503,17 @@ M: Tomasz Kantecki <tomasz.kantecki@intel.com>
 F: doc/guides/sample_app_ug/l2_forward_cat.rst
 F: examples/l2fwd-cat/
 
+M: Sunil Kumar Kori <skori@marvell.com>
+M: Pavan Nikhilesh <pbhagavatula@marvell.com>
+T: git://dpdk.org/next/dpdk-next-eventdev
+F: examples/l2fwd-event/
+F: doc/guides/sample_app_ug/l2_forward_event.rst
+
 F: examples/l3fwd/
 F: doc/guides/sample_app_ug/l3_forward.rst
 
-F: examples/l3fwd-vf/
-F: doc/guides/sample_app_ug/l3_forward_virtual.rst
-
 F: examples/link_status_interrupt/
 F: doc/guides/sample_app_ug/link_status_intr.rst
-
-F: examples/load_balancer/
-F: doc/guides/sample_app_ug/load_balancer.rst
-
-F: examples/netmap_compat/
-F: doc/guides/sample_app_ug/netmap_compatibility.rst
 
 L-threads - EXPERIMENTAL
 M: John McNamara <john.mcnamara@intel.com>
@@ -1495,9 +1521,6 @@ F: examples/performance-thread/
 F: doc/guides/sample_app_ug/performance_thread.rst
 
 F: examples/ptpclient/
-
-F: examples/quota_watermark/
-F: doc/guides/sample_app_ug/quota_watermark.rst
 
 M: Bruce Richardson <bruce.richardson@intel.com>
 M: John McNamara <john.mcnamara@intel.com>

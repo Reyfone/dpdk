@@ -4,6 +4,8 @@
 
 #include <stdbool.h>
 #include <rte_ethdev_pci.h>
+#include <rte_random.h>
+#include <dpaax_iova_table.h>
 
 #include "enetc_logs.h"
 #include "enetc.h"
@@ -123,11 +125,22 @@ enetc_link_update(struct rte_eth_dev *dev, int wait_to_complete __rte_unused)
 	return rte_eth_linkstatus_set(dev, &link);
 }
 
+static void
+print_ethaddr(const char *name, const struct rte_ether_addr *eth_addr)
+{
+	char buf[RTE_ETHER_ADDR_FMT_SIZE];
+
+	rte_ether_format_addr(buf, RTE_ETHER_ADDR_FMT_SIZE, eth_addr);
+	ENETC_PMD_NOTICE("%s%s\n", name, buf);
+}
+
 static int
 enetc_hardware_init(struct enetc_eth_hw *hw)
 {
 	struct enetc_hw *enetc_hw = &hw->hw;
 	uint32_t *mac = (uint32_t *)hw->mac.addr;
+	uint32_t high_mac = 0;
+	uint16_t low_mac = 0;
 
 	PMD_INIT_FUNC_TRACE();
 	/* Calculating and storing the base HW addresses */
@@ -138,8 +151,29 @@ enetc_hardware_init(struct enetc_eth_hw *hw)
 	enetc_wr(enetc_hw, ENETC_SIMR, ENETC_SIMR_EN);
 
 	*mac = (uint32_t)enetc_port_rd(enetc_hw, ENETC_PSIPMAR0(0));
+	high_mac = (uint32_t)*mac;
 	mac++;
 	*mac = (uint16_t)enetc_port_rd(enetc_hw, ENETC_PSIPMAR1(0));
+	low_mac = (uint16_t)*mac;
+
+	if ((high_mac | low_mac) == 0) {
+		char *first_byte;
+
+		ENETC_PMD_NOTICE("MAC is not available for this SI, "
+				"set random MAC\n");
+		mac = (uint32_t *)hw->mac.addr;
+		*mac = (uint32_t)rte_rand();
+		first_byte = (char *)mac;
+		*first_byte &= 0xfe;	/* clear multicast bit */
+		*first_byte |= 0x02;	/* set local assignment bit (IEEE802) */
+
+		enetc_port_wr(enetc_hw, ENETC_PSIPMAR0(0), *mac);
+		mac++;
+		*mac = (uint16_t)rte_rand();
+		enetc_port_wr(enetc_hw, ENETC_PSIPMAR1(0), *mac);
+		print_ethaddr("New address: ",
+			      (const struct rte_ether_addr *)hw->mac.addr);
+	}
 
 	return 0;
 }
@@ -178,12 +212,12 @@ enetc_alloc_txbdr(struct enetc_bdr *txr, uint16_t nb_desc)
 	int size;
 
 	size = nb_desc * sizeof(struct enetc_swbd);
-	txr->q_swbd = rte_malloc(NULL, size, RTE_CACHE_LINE_SIZE);
+	txr->q_swbd = rte_malloc(NULL, size, ENETC_BD_RING_ALIGN);
 	if (txr->q_swbd == NULL)
 		return -ENOMEM;
 
 	size = nb_desc * sizeof(struct enetc_tx_bd);
-	txr->bd_base = rte_malloc(NULL, size, RTE_CACHE_LINE_SIZE);
+	txr->bd_base = rte_malloc(NULL, size, ENETC_BD_RING_ALIGN);
 	if (txr->bd_base == NULL) {
 		rte_free(txr->q_swbd);
 		txr->q_swbd = NULL;
@@ -325,12 +359,12 @@ enetc_alloc_rxbdr(struct enetc_bdr *rxr,
 	int size;
 
 	size = nb_rx_desc * sizeof(struct enetc_swbd);
-	rxr->q_swbd = rte_malloc(NULL, size, RTE_CACHE_LINE_SIZE);
+	rxr->q_swbd = rte_malloc(NULL, size, ENETC_BD_RING_ALIGN);
 	if (rxr->q_swbd == NULL)
 		return -ENOMEM;
 
 	size = nb_rx_desc * sizeof(union enetc_rx_bd);
-	rxr->bd_base = rte_malloc(NULL, size, RTE_CACHE_LINE_SIZE);
+	rxr->bd_base = rte_malloc(NULL, size, ENETC_BD_RING_ALIGN);
 	if (rxr->bd_base == NULL) {
 		rte_free(rxr->q_swbd);
 		rxr->q_swbd = NULL;
@@ -863,6 +897,9 @@ enetc_dev_init(struct rte_eth_dev *eth_dev)
 	eth_dev->data->mtu = RTE_ETHER_MAX_LEN - RTE_ETHER_HDR_LEN -
 		RTE_ETHER_CRC_LEN;
 
+	if (rte_eal_iova_mode() == RTE_IOVA_PA)
+		dpaax_iova_table_populate();
+
 	ENETC_PMD_DEBUG("port_id %d vendorID=0x%x deviceID=0x%x",
 			eth_dev->data->port_id, pci_dev->id.vendor_id,
 			pci_dev->id.device_id);
@@ -873,6 +910,10 @@ static int
 enetc_dev_uninit(struct rte_eth_dev *eth_dev __rte_unused)
 {
 	PMD_INIT_FUNC_TRACE();
+
+	if (rte_eal_iova_mode() == RTE_IOVA_PA)
+		dpaax_iova_table_depopulate();
+
 	return 0;
 }
 

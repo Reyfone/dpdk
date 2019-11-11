@@ -27,6 +27,49 @@
 #include "mlx5.h"
 #include "mlx5_prm.h"
 
+enum modify_reg {
+	REG_A,
+	REG_B,
+	REG_C_0,
+	REG_C_1,
+	REG_C_2,
+	REG_C_3,
+	REG_C_4,
+	REG_C_5,
+	REG_C_6,
+	REG_C_7,
+};
+
+/* Private rte flow items. */
+enum mlx5_rte_flow_item_type {
+	MLX5_RTE_FLOW_ITEM_TYPE_END = INT_MIN,
+	MLX5_RTE_FLOW_ITEM_TYPE_TAG,
+	MLX5_RTE_FLOW_ITEM_TYPE_TX_QUEUE,
+};
+
+/* Private rte flow actions. */
+enum mlx5_rte_flow_action_type {
+	MLX5_RTE_FLOW_ACTION_TYPE_END = INT_MIN,
+	MLX5_RTE_FLOW_ACTION_TYPE_TAG,
+};
+
+/* Matches on selected register. */
+struct mlx5_rte_flow_item_tag {
+	uint16_t id;
+	rte_be32_t data;
+};
+
+/* Modify selected register. */
+struct mlx5_rte_flow_action_set_tag {
+	uint16_t id;
+	rte_be32_t data;
+};
+
+/* Matches on source queue. */
+struct mlx5_rte_flow_item_tx_queue {
+	uint32_t queue;
+};
+
 /* Pattern outer Layer bits. */
 #define MLX5_FLOW_LAYER_OUTER_L2 (1u << 0)
 #define MLX5_FLOW_LAYER_OUTER_L3_IPV4 (1u << 1)
@@ -53,16 +96,21 @@
 /* General pattern items bits. */
 #define MLX5_FLOW_ITEM_METADATA (1u << 16)
 #define MLX5_FLOW_ITEM_PORT_ID (1u << 17)
+#define MLX5_FLOW_ITEM_TAG (1u << 18)
 
 /* Pattern MISC bits. */
-#define MLX5_FLOW_LAYER_ICMP (1u << 18)
-#define MLX5_FLOW_LAYER_ICMP6 (1u << 19)
-#define MLX5_FLOW_LAYER_GRE_KEY (1u << 20)
+#define MLX5_FLOW_LAYER_ICMP (1u << 19)
+#define MLX5_FLOW_LAYER_ICMP6 (1u << 20)
+#define MLX5_FLOW_LAYER_GRE_KEY (1u << 21)
 
 /* Pattern tunnel Layer bits (continued). */
 #define MLX5_FLOW_LAYER_IPIP (1u << 21)
 #define MLX5_FLOW_LAYER_IPV6_ENCAP (1u << 22)
 #define MLX5_FLOW_LAYER_NVGRE (1u << 23)
+#define MLX5_FLOW_LAYER_GENEVE (1u << 24)
+
+/* Queue items. */
+#define MLX5_FLOW_ITEM_TX_QUEUE (1u << 25)
 
 /* Outer Masks. */
 #define MLX5_FLOW_LAYER_OUTER_L3 \
@@ -83,7 +131,8 @@
 #define MLX5_FLOW_LAYER_TUNNEL \
 	(MLX5_FLOW_LAYER_VXLAN | MLX5_FLOW_LAYER_VXLAN_GPE | \
 	 MLX5_FLOW_LAYER_GRE | MLX5_FLOW_LAYER_NVGRE | MLX5_FLOW_LAYER_MPLS | \
-	 MLX5_FLOW_LAYER_IPIP | MLX5_FLOW_LAYER_IPV6_ENCAP)
+	 MLX5_FLOW_LAYER_IPIP | MLX5_FLOW_LAYER_IPV6_ENCAP | \
+	 MLX5_FLOW_LAYER_GENEVE)
 
 /* Inner Masks. */
 #define MLX5_FLOW_LAYER_INNER_L3 \
@@ -139,6 +188,7 @@
 #define MLX5_FLOW_ACTION_DEC_TCP_SEQ (1u << 29)
 #define MLX5_FLOW_ACTION_INC_TCP_ACK (1u << 30)
 #define MLX5_FLOW_ACTION_DEC_TCP_ACK (1u << 31)
+#define MLX5_FLOW_ACTION_SET_TAG (1ull << 32)
 
 #define MLX5_FLOW_FATE_ACTIONS \
 	(MLX5_FLOW_ACTION_DROP | MLX5_FLOW_ACTION_QUEUE | \
@@ -172,7 +222,8 @@
 				      MLX5_FLOW_ACTION_DEC_TCP_SEQ | \
 				      MLX5_FLOW_ACTION_INC_TCP_ACK | \
 				      MLX5_FLOW_ACTION_DEC_TCP_ACK | \
-				      MLX5_FLOW_ACTION_OF_SET_VLAN_VID)
+				      MLX5_FLOW_ACTION_OF_SET_VLAN_VID | \
+				      MLX5_FLOW_ACTION_SET_TAG)
 
 #define MLX5_FLOW_VLAN_ACTIONS (MLX5_FLOW_ACTION_OF_POP_VLAN | \
 				MLX5_FLOW_ACTION_OF_PUSH_VLAN)
@@ -187,6 +238,9 @@
 /* UDP port numbers for VxLAN. */
 #define MLX5_UDP_PORT_VXLAN 4789
 #define MLX5_UDP_PORT_VXLAN_GPE 4790
+
+/* UDP port numbers for GENEVE. */
+#define MLX5_UDP_PORT_GENEVE 6081
 
 /* Priority reserved for default flows. */
 #define MLX5_FLOW_PRIO_RSVD ((uint32_t)-1)
@@ -219,6 +273,33 @@
 
 /* IBV hash source bits  for IPV6. */
 #define MLX5_IPV6_IBV_RX_HASH (IBV_RX_HASH_SRC_IPV6 | IBV_RX_HASH_DST_IPV6)
+
+
+/* Geneve header first 16Bit */
+#define MLX5_GENEVE_VER_MASK 0x3
+#define MLX5_GENEVE_VER_SHIFT 14
+#define MLX5_GENEVE_VER_VAL(a) \
+		(((a) >> (MLX5_GENEVE_VER_SHIFT)) & (MLX5_GENEVE_VER_MASK))
+#define MLX5_GENEVE_OPTLEN_MASK 0x3F
+#define MLX5_GENEVE_OPTLEN_SHIFT 7
+#define MLX5_GENEVE_OPTLEN_VAL(a) \
+	    (((a) >> (MLX5_GENEVE_OPTLEN_SHIFT)) & (MLX5_GENEVE_OPTLEN_MASK))
+#define MLX5_GENEVE_OAMF_MASK 0x1
+#define MLX5_GENEVE_OAMF_SHIFT 7
+#define MLX5_GENEVE_OAMF_VAL(a) \
+		(((a) >> (MLX5_GENEVE_OAMF_SHIFT)) & (MLX5_GENEVE_OAMF_MASK))
+#define MLX5_GENEVE_CRITO_MASK 0x1
+#define MLX5_GENEVE_CRITO_SHIFT 6
+#define MLX5_GENEVE_CRITO_VAL(a) \
+		(((a) >> (MLX5_GENEVE_CRITO_SHIFT)) & (MLX5_GENEVE_CRITO_MASK))
+#define MLX5_GENEVE_RSVD_MASK 0x3F
+#define MLX5_GENEVE_RSVD_VAL(a) ((a) & (MLX5_GENEVE_RSVD_MASK))
+/*
+ * The length of the Geneve options fields, expressed in four byte multiples,
+ * not including the eight byte fixed tunnel.
+ */
+#define MLX5_GENEVE_OPT_LEN_0 14
+#define MLX5_GENEVE_OPT_LEN_1 63
 
 enum mlx5_flow_drv_type {
 	MLX5_FLOW_TYPE_MIN,
@@ -385,6 +466,8 @@ struct mlx5_flow {
 	struct rte_flow *flow; /**< Pointer to the main flow. */
 	uint64_t layers;
 	/**< Bit-fields of present layers, see MLX5_FLOW_LAYER_*. */
+	uint64_t actions;
+	/**< Bit-fields of detected actions, see MLX5_FLOW_ACTION_*. */
 	union {
 #ifdef HAVE_IBV_FLOW_DV_SUPPORT
 		struct mlx5_flow_dv dv;
@@ -406,12 +489,11 @@ struct rte_flow {
 	uint16_t (*queue)[]; /**< Destination queues to redirect traffic to. */
 	LIST_HEAD(dev_flows, mlx5_flow) dev_flows;
 	/**< Device flows that are part of the flow. */
-	uint64_t actions;
-	/**< Bit-fields of detected actions, see MLX5_FLOW_ACTION_*. */
 	struct mlx5_fdir *fdir; /**< Pointer to associated FDIR if any. */
 	uint8_t ingress; /**< 1 if the flow is ingress. */
 	uint32_t group; /**< The group index. */
 	uint8_t transfer; /**< 1 if the flow is E-Switch flow. */
+	uint32_t hairpin_flow_id; /**< The flow id used for hairpin. */
 };
 
 typedef int (*mlx5_flow_validate_t)(struct rte_eth_dev *dev,
@@ -457,6 +539,11 @@ struct mlx5_flow_driver_ops {
 
 /* mlx5_flow.c */
 
+struct mlx5_flow_id_pool *mlx5_flow_id_pool_alloc(void);
+void mlx5_flow_id_pool_release(struct mlx5_flow_id_pool *pool);
+uint32_t mlx5_flow_id_get(struct mlx5_flow_id_pool *pool, uint32_t *id);
+uint32_t mlx5_flow_id_release(struct mlx5_flow_id_pool *pool,
+			      uint32_t id);
 int mlx5_flow_group_to_table(const struct rte_flow_attr *attributes,
 			     bool external, uint32_t group, uint32_t *table,
 			     struct rte_flow_error *error);
@@ -513,10 +600,14 @@ int mlx5_flow_validate_item_gre_key(const struct rte_flow_item *item,
 				    struct rte_flow_error *error);
 int mlx5_flow_validate_item_ipv4(const struct rte_flow_item *item,
 				 uint64_t item_flags,
+				 uint64_t last_item,
+				 uint16_t ether_type,
 				 const struct rte_flow_item_ipv4 *acc_mask,
 				 struct rte_flow_error *error);
 int mlx5_flow_validate_item_ipv6(const struct rte_flow_item *item,
 				 uint64_t item_flags,
+				 uint64_t last_item,
+				 uint16_t ether_type,
 				 const struct rte_flow_item_ipv6 *acc_mask,
 				 struct rte_flow_error *error);
 int mlx5_flow_validate_item_mpls(struct rte_eth_dev *dev,
@@ -556,4 +647,8 @@ int mlx5_flow_validate_item_nvgre(const struct rte_flow_item *item,
 				  uint64_t item_flags,
 				  uint8_t target_protocol,
 				  struct rte_flow_error *error);
+int mlx5_flow_validate_item_geneve(const struct rte_flow_item *item,
+				   uint64_t item_flags,
+				   struct rte_eth_dev *dev,
+				   struct rte_flow_error *error);
 #endif /* RTE_PMD_MLX5_FLOW_H_ */

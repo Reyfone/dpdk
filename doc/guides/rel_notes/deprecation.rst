@@ -23,10 +23,6 @@ Deprecation Notices
 * eal: The function ``rte_eal_remote_launch`` will return new error codes
   after read or write error on the pipe, instead of calling ``rte_panic``.
 
-* eal: The ``lcore_config`` struct and global symbol will be made private to
-  remove it from the externally visible ABI and allow it to be updated in the
-  future.
-
 * eal: both declaring and identifying devices will be streamlined in v18.11.
   New functions will appear to query a specific port from buses, classes of
   device and device drivers. Device declaration will be made coherent with the
@@ -38,43 +34,15 @@ Deprecation Notices
 
     + ``rte_eal_devargs_type_count``
 
-* eal: The ``rte_cpu_check_supported`` function has been deprecated since
-  v17.08 and will be removed.
-
-* eal: The ``rte_malloc_virt2phy`` function has been deprecated and replaced
-  by ``rte_malloc_virt2iova`` since v17.11 and will be removed.
-
-* vfio: removal of ``rte_vfio_dma_map`` and ``rte_vfio_dma_unmap`` APIs which
-  have been replaced with ``rte_dev_dma_map`` and ``rte_dev_dma_unmap``
-  functions.  The due date for the removal targets DPDK 20.02.
-
-* pci: Several exposed functions are misnamed.
-  The following functions are deprecated starting from v17.11 and are replaced:
-
-  - ``eal_parse_pci_BDF`` replaced by ``rte_pci_addr_parse``
-  - ``eal_parse_pci_DomBDF`` replaced by ``rte_pci_addr_parse``
-  - ``rte_eal_compare_pci_addr`` replaced by ``rte_pci_addr_cmp``
+* eal: The ``rte_logs`` struct and global symbol will be made private to
+  remove it from the externally visible ABI and allow it to be updated in the
+  future.
 
 * dpaa2: removal of ``rte_dpaa2_memsegs`` structure which has been replaced
   by a pa-va search library. This structure was earlier being used for holding
   memory segments used by dpaa2 driver for faster pa->va translation. This
   structure would be made internal (or removed if all dependencies are cleared)
   in future releases.
-
-* net: The Ethernet address and header definitions will change
-  attributes. The Ethernet address struct will no longer be marked as
-  packed since the packed attribute is meaningless on a byte
-  array. The Ethernet header will be marked as aligned on a 2-byte
-  boundary and will no longer have the packed attribute. This allows
-  for efficient access on CPU architectures where unaligned access is
-  expensive. These changes should not impact normal usage because drivers
-  naturally align the Ethernet header on receive and all known
-  encapsulations preserve the alignment of the header.
-
-* ethdev: The function ``rte_eth_dev_count`` will be removed in DPDK 20.02.
-  It is replaced by the function ``rte_eth_dev_count_avail``.
-  If the intent is to iterate over ports, ``RTE_ETH_FOREACH_*`` macros
-  are better port iterators.
 
 * ethdev: the legacy filter API, including
   ``rte_eth_dev_filter_supported()``, ``rte_eth_dev_filter_ctrl()`` as well

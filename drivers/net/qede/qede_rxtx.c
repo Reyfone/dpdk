@@ -569,12 +569,12 @@ qede_alloc_mem_sb(struct qede_dev *qdev, struct ecore_sb_info *sb_info,
 		  uint16_t sb_id)
 {
 	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
-	struct status_block_e4 *sb_virt;
+	struct status_block *sb_virt;
 	dma_addr_t sb_phys;
 	int rc;
 
 	sb_virt = OSAL_DMA_ALLOC_COHERENT(edev, &sb_phys,
-					  sizeof(struct status_block_e4));
+					  sizeof(struct status_block));
 	if (!sb_virt) {
 		DP_ERR(edev, "Status block allocation failed\n");
 		return -ENOMEM;
@@ -584,7 +584,7 @@ qede_alloc_mem_sb(struct qede_dev *qdev, struct ecore_sb_info *sb_info,
 	if (rc) {
 		DP_ERR(edev, "Status block initialization failed\n");
 		OSAL_DMA_FREE_COHERENT(edev, sb_virt, sb_phys,
-				       sizeof(struct status_block_e4));
+				       sizeof(struct status_block));
 		return rc;
 	}
 
@@ -683,7 +683,7 @@ void qede_dealloc_fp_resc(struct rte_eth_dev *eth_dev)
 		if (fp->sb_info) {
 			OSAL_DMA_FREE_COHERENT(edev, fp->sb_info->sb_virt,
 				fp->sb_info->sb_phys,
-				sizeof(struct status_block_e4));
+				sizeof(struct status_block));
 			rte_free(fp->sb_info);
 			fp->sb_info = NULL;
 		}
@@ -805,7 +805,7 @@ qede_rx_queue_start(struct rte_eth_dev *eth_dev, uint16_t rx_queue_id)
 		fp->rxq->hw_rxq_prod_addr = ret_params.p_prod;
 		fp->rxq->handle = ret_params.p_handle;
 
-		fp->rxq->hw_cons_ptr = &fp->sb_info->sb_virt->pi_array[RX_PI];
+		fp->rxq->hw_cons_ptr = &fp->sb_info->sb_pi_array[RX_PI];
 		qede_update_rx_prod(qdev, fp->rxq);
 		eth_dev->data->rx_queue_state[rx_queue_id] =
 			RTE_ETH_QUEUE_STATE_STARTED;
@@ -863,7 +863,7 @@ qede_tx_queue_start(struct rte_eth_dev *eth_dev, uint16_t tx_queue_id)
 		txq->doorbell_addr = ret_params.p_doorbell;
 		txq->handle = ret_params.p_handle;
 
-		txq->hw_cons_ptr = &fp->sb_info->sb_virt->pi_array[TX_PI(0)];
+		txq->hw_cons_ptr = &fp->sb_info->sb_pi_array[TX_PI(0)];
 		SET_FIELD(txq->tx_db.data.params, ETH_DB_DATA_DEST,
 				DB_DEST_XCM);
 		SET_FIELD(txq->tx_db.data.params, ETH_DB_DATA_AGG_CMD,
@@ -1602,17 +1602,17 @@ qede_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 			/* Mark it as LRO packet */
 			ol_flags |= PKT_RX_LRO;
 			/* In split mode,  seg_len is same as len_on_first_bd
-			 * and ext_bd_len_list will be empty since there are
+			 * and bw_ext_bd_len_list will be empty since there are
 			 * no additional buffers
 			 */
 			PMD_RX_LOG(INFO, rxq,
-			    "TPA start[%d] - len_on_first_bd %d header %d"
-			    " [bd_list[0] %d], [seg_len %d]\n",
-			    cqe_start_tpa->tpa_agg_index,
-			    rte_le_to_cpu_16(cqe_start_tpa->len_on_first_bd),
-			    cqe_start_tpa->header_len,
-			    rte_le_to_cpu_16(cqe_start_tpa->ext_bd_len_list[0]),
-			    rte_le_to_cpu_16(cqe_start_tpa->seg_len));
+			 "TPA start[%d] - len_on_first_bd %d header %d"
+			 " [bd_list[0] %d], [seg_len %d]\n",
+			 cqe_start_tpa->tpa_agg_index,
+			 rte_le_to_cpu_16(cqe_start_tpa->len_on_first_bd),
+			 cqe_start_tpa->header_len,
+			 rte_le_to_cpu_16(cqe_start_tpa->bw_ext_bd_len_list[0]),
+			 rte_le_to_cpu_16(cqe_start_tpa->seg_len));
 
 		break;
 		case ETH_RX_CQE_TYPE_TPA_CONT:

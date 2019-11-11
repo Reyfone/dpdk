@@ -583,18 +583,16 @@ mlx5_dump_debug_information(const char *fname, const char *hex_title,
 	MKSTR(path, "%s/%s", MLX5_SYSTEM_LOG_DIR, fname);
 	fd = fopen(path, "a+");
 	if (!fd) {
-		DRV_LOG(WARNING, "cannot open %s for debug dump\n",
-			path);
+		DRV_LOG(WARNING, "cannot open %s for debug dump", path);
 		MKSTR(path2, "./%s", fname);
 		fd = fopen(path2, "a+");
 		if (!fd) {
-			DRV_LOG(ERR, "cannot open %s for debug dump\n",
-				path2);
+			DRV_LOG(ERR, "cannot open %s for debug dump", path2);
 			return;
 		}
-		DRV_LOG(INFO, "New debug dump in file %s\n", path2);
+		DRV_LOG(INFO, "New debug dump in file %s", path2);
 	} else {
-		DRV_LOG(INFO, "New debug dump in file %s\n", path);
+		DRV_LOG(INFO, "New debug dump in file %s", path);
 	}
 	if (hex_title)
 		rte_hexdump(fd, hex_title, buf, hex_len);
@@ -850,7 +848,7 @@ mlx5_queue_state_modify_primary(struct rte_eth_dev *dev,
 						      &rq_attr);
 		}
 		if (ret) {
-			DRV_LOG(ERR, "Cannot change Rx WQ state to %u  - %s\n",
+			DRV_LOG(ERR, "Cannot change Rx WQ state to %u  - %s",
 					sm->state, strerror(errno));
 			rte_errno = errno;
 			return ret;
@@ -863,12 +861,12 @@ mlx5_queue_state_modify_primary(struct rte_eth_dev *dev,
 			.qp_state = IBV_QPS_RESET,
 			.port_num = (uint8_t)priv->ibv_port,
 		};
-		struct ibv_qp *qp = txq_ctrl->ibv->qp;
+		struct ibv_qp *qp = txq_ctrl->obj->qp;
 
 		ret = mlx5_glue->modify_qp(qp, &mod, IBV_QP_STATE);
 		if (ret) {
 			DRV_LOG(ERR, "Cannot change the Tx QP state to RESET "
-				"%s\n", strerror(errno));
+				"%s", strerror(errno));
 			rte_errno = errno;
 			return ret;
 		}
@@ -876,7 +874,7 @@ mlx5_queue_state_modify_primary(struct rte_eth_dev *dev,
 		ret = mlx5_glue->modify_qp(qp, &mod,
 					   (IBV_QP_STATE | IBV_QP_PORT));
 		if (ret) {
-			DRV_LOG(ERR, "Cannot change Tx QP state to INIT %s\n",
+			DRV_LOG(ERR, "Cannot change Tx QP state to INIT %s",
 				strerror(errno));
 			rte_errno = errno;
 			return ret;
@@ -884,7 +882,7 @@ mlx5_queue_state_modify_primary(struct rte_eth_dev *dev,
 		mod.qp_state = IBV_QPS_RTR;
 		ret = mlx5_glue->modify_qp(qp, &mod, IBV_QP_STATE);
 		if (ret) {
-			DRV_LOG(ERR, "Cannot change Tx QP state to RTR %s\n",
+			DRV_LOG(ERR, "Cannot change Tx QP state to RTR %s",
 				strerror(errno));
 			rte_errno = errno;
 			return ret;
@@ -892,7 +890,7 @@ mlx5_queue_state_modify_primary(struct rte_eth_dev *dev,
 		mod.qp_state = IBV_QPS_RTS;
 		ret = mlx5_glue->modify_qp(qp, &mod, IBV_QP_STATE);
 		if (ret) {
-			DRV_LOG(ERR, "Cannot change Tx QP state to RTS %s\n",
+			DRV_LOG(ERR, "Cannot change Tx QP state to RTS %s",
 				strerror(errno));
 			rte_errno = errno;
 			return ret;
@@ -2281,8 +2279,8 @@ mlx5_tx_eseg_none(struct mlx5_txq_data *restrict txq __rte_unused,
 	es->swp_offs = txq_mbuf_to_swp(loc, &es->swp_flags, olx);
 	/* Fill metadata field if needed. */
 	es->metadata = MLX5_TXOFF_CONFIG(METADATA) ?
-		       loc->mbuf->ol_flags & PKT_TX_METADATA ?
-		       loc->mbuf->tx_metadata : 0 : 0;
+		       loc->mbuf->ol_flags & PKT_TX_DYNF_METADATA ?
+		       *RTE_FLOW_DYNF_METADATA(loc->mbuf) : 0 : 0;
 	/* Engage VLAN tag insertion feature if requested. */
 	if (MLX5_TXOFF_CONFIG(VLAN) &&
 	    loc->mbuf->ol_flags & PKT_TX_VLAN_PKT) {
@@ -2341,8 +2339,8 @@ mlx5_tx_eseg_dmin(struct mlx5_txq_data *restrict txq __rte_unused,
 	es->swp_offs = txq_mbuf_to_swp(loc, &es->swp_flags, olx);
 	/* Fill metadata field if needed. */
 	es->metadata = MLX5_TXOFF_CONFIG(METADATA) ?
-		       loc->mbuf->ol_flags & PKT_TX_METADATA ?
-		       loc->mbuf->tx_metadata : 0 : 0;
+		       loc->mbuf->ol_flags & PKT_TX_DYNF_METADATA ?
+		       *RTE_FLOW_DYNF_METADATA(loc->mbuf) : 0 : 0;
 	static_assert(MLX5_ESEG_MIN_INLINE_SIZE ==
 				(sizeof(uint16_t) +
 				 sizeof(rte_v128u32_t)),
@@ -2434,8 +2432,8 @@ mlx5_tx_eseg_data(struct mlx5_txq_data *restrict txq,
 	es->swp_offs = txq_mbuf_to_swp(loc, &es->swp_flags, olx);
 	/* Fill metadata field if needed. */
 	es->metadata = MLX5_TXOFF_CONFIG(METADATA) ?
-		       loc->mbuf->ol_flags & PKT_TX_METADATA ?
-		       loc->mbuf->tx_metadata : 0 : 0;
+		       loc->mbuf->ol_flags & PKT_TX_DYNF_METADATA ?
+		       *RTE_FLOW_DYNF_METADATA(loc->mbuf) : 0 : 0;
 	static_assert(MLX5_ESEG_MIN_INLINE_SIZE ==
 				(sizeof(uint16_t) +
 				 sizeof(rte_v128u32_t)),
@@ -2628,8 +2626,8 @@ mlx5_tx_eseg_mdat(struct mlx5_txq_data *restrict txq,
 	es->swp_offs = txq_mbuf_to_swp(loc, &es->swp_flags, olx);
 	/* Fill metadata field if needed. */
 	es->metadata = MLX5_TXOFF_CONFIG(METADATA) ?
-		       loc->mbuf->ol_flags & PKT_TX_METADATA ?
-		       loc->mbuf->tx_metadata : 0 : 0;
+		       loc->mbuf->ol_flags & PKT_TX_DYNF_METADATA ?
+		       *RTE_FLOW_DYNF_METADATA(loc->mbuf) : 0 : 0;
 	static_assert(MLX5_ESEG_MIN_INLINE_SIZE ==
 				(sizeof(uint16_t) +
 				 sizeof(rte_v128u32_t)),
@@ -2747,27 +2745,33 @@ mlx5_tx_dseg_iptr(struct mlx5_txq_data *restrict txq,
 	/* Unrolled implementation of generic rte_memcpy. */
 	dst = (uintptr_t)&dseg->inline_data[0];
 	src = (uintptr_t)buf;
-#ifdef RTE_ARCH_STRICT_ALIGN
-	memcpy(dst, src, len);
-#else
 	if (len & 0x08) {
-		*(uint64_t *)dst = *(uint64_t *)src;
+#ifdef RTE_ARCH_STRICT_ALIGN
+		assert(dst == RTE_PTR_ALIGN(dst, sizeof(uint32_t)));
+		*(uint32_t *)dst = *(unaligned_uint32_t *)src;
+		dst += sizeof(uint32_t);
+		src += sizeof(uint32_t);
+		*(uint32_t *)dst = *(unaligned_uint32_t *)src;
+		dst += sizeof(uint32_t);
+		src += sizeof(uint32_t);
+#else
+		*(uint64_t *)dst = *(unaligned_uint64_t *)src;
 		dst += sizeof(uint64_t);
 		src += sizeof(uint64_t);
+#endif
 	}
 	if (len & 0x04) {
-		*(uint32_t *)dst = *(uint32_t *)src;
+		*(uint32_t *)dst = *(unaligned_uint32_t *)src;
 		dst += sizeof(uint32_t);
 		src += sizeof(uint32_t);
 	}
 	if (len & 0x02) {
-		*(uint16_t *)dst = *(uint16_t *)src;
+		*(uint16_t *)dst = *(unaligned_uint16_t *)src;
 		dst += sizeof(uint16_t);
 		src += sizeof(uint16_t);
 	}
 	if (len & 0x01)
 		*(uint8_t *)dst = *(uint8_t *)src;
-#endif
 }
 
 /**
@@ -3694,8 +3698,8 @@ mlx5_tx_match_empw(struct mlx5_txq_data *restrict txq __rte_unused,
 		return false;
 	/* Fill metadata field if needed. */
 	if (MLX5_TXOFF_CONFIG(METADATA) &&
-		es->metadata != (loc->mbuf->ol_flags & PKT_TX_METADATA ?
-				 loc->mbuf->tx_metadata : 0))
+		es->metadata != (loc->mbuf->ol_flags & PKT_TX_DYNF_METADATA ?
+				 *RTE_FLOW_DYNF_METADATA(loc->mbuf) : 0))
 		return false;
 	/* There must be no VLAN packets in eMPW loop. */
 	if (MLX5_TXOFF_CONFIG(VLAN))
@@ -4568,7 +4572,7 @@ send_loop:
 	loc.wqe_free = txq->wqe_s -
 				(uint16_t)(txq->wqe_ci - txq->wqe_pi);
 	if (unlikely(!loc.elts_free || !loc.wqe_free))
-		return loc.pkts_sent;
+		goto burst_exit;
 	for (;;) {
 		/*
 		 * Fetch the packet from array. Usually this is
@@ -4735,7 +4739,7 @@ enter_send_single:
 	assert(MLX5_TXOFF_CONFIG(INLINE) || loc.pkts_sent >= loc.pkts_copy);
 	/* Take a shortcut if nothing is sent. */
 	if (unlikely(loc.pkts_sent == loc.pkts_loop))
-		return loc.pkts_sent;
+		goto burst_exit;
 	/*
 	 * Ring QP doorbell immediately after WQE building completion
 	 * to improve latencies. The pure software related data treatment
@@ -4758,10 +4762,6 @@ enter_send_single:
 		mlx5_tx_copy_elts(txq, pkts + loc.pkts_copy, part, olx);
 		loc.pkts_copy = loc.pkts_sent;
 	}
-#ifdef MLX5_PMD_SOFT_COUNTERS
-	/* Increment sent packets counter. */
-	txq->stats.opackets += loc.pkts_sent;
-#endif
 	assert(txq->elts_s >= (uint16_t)(txq->elts_head - txq->elts_tail));
 	assert(txq->wqe_s >= (uint16_t)(txq->wqe_ci - txq->wqe_pi));
 	if (pkts_n > loc.pkts_sent) {
@@ -4772,6 +4772,11 @@ enter_send_single:
 		 */
 		goto send_loop;
 	}
+burst_exit:
+#ifdef MLX5_PMD_SOFT_COUNTERS
+	/* Increment sent packets counter. */
+	txq->stats.opackets += loc.pkts_sent;
+#endif
 	return loc.pkts_sent;
 }
 
@@ -5142,7 +5147,7 @@ mlx5_select_tx_function(struct rte_eth_dev *dev)
 		 */
 		olx |= MLX5_TXOFF_CONFIG_EMPW;
 	}
-	if (tx_offloads & DEV_TX_OFFLOAD_MATCH_METADATA) {
+	if (rte_flow_dynf_metadata_avail()) {
 		/* We should support Flow metadata. */
 		olx |= MLX5_TXOFF_CONFIG_METADATA;
 	}

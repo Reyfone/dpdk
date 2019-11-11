@@ -58,6 +58,19 @@
 #define ICE_FLOW_HASH_GTP_U_IPV6_TEID \
 	(ICE_FLOW_HASH_IPV6 | ICE_FLOW_HASH_GTP_U_TEID)
 
+#define ICE_FLOW_HASH_GTP_U_EH_TEID \
+	(BIT_ULL(ICE_FLOW_FIELD_IDX_GTPU_EH_TEID))
+
+#define ICE_FLOW_HASH_GTP_U_EH_QFI \
+	(BIT_ULL(ICE_FLOW_FIELD_IDX_GTPU_EH_QFI))
+
+#define ICE_FLOW_HASH_GTP_U_IPV4_EH \
+	(ICE_FLOW_HASH_IPV4 | ICE_FLOW_HASH_GTP_U_EH_TEID | \
+	 ICE_FLOW_HASH_GTP_U_EH_QFI)
+#define ICE_FLOW_HASH_GTP_U_IPV6_EH \
+	(ICE_FLOW_HASH_IPV6 | ICE_FLOW_HASH_GTP_U_EH_TEID | \
+	 ICE_FLOW_HASH_GTP_U_EH_QFI)
+
 #define ICE_FLOW_HASH_PPPOE_SESS_ID \
 	(BIT_ULL(ICE_FLOW_FIELD_IDX_PPPOE_SESS_ID))
 
@@ -89,9 +102,10 @@ enum ice_flow_seg_hdr {
 	ICE_FLOW_SEG_HDR_GTPC		= 0x00000400,
 	ICE_FLOW_SEG_HDR_GTPC_TEID	= 0x00000800,
 	ICE_FLOW_SEG_HDR_GTPU_IP	= 0x00001000,
-	ICE_FLOW_SEG_HDR_GTPU_DWN	= 0x00002000,
-	ICE_FLOW_SEG_HDR_GTPU_UP	= 0x00004000,
-	ICE_FLOW_SEG_HDR_PPPOE		= 0x00008000,
+	ICE_FLOW_SEG_HDR_GTPU_EH	= 0x00002000,
+	ICE_FLOW_SEG_HDR_GTPU_DWN	= 0x00004000,
+	ICE_FLOW_SEG_HDR_GTPU_UP	= 0x00008000,
+	ICE_FLOW_SEG_HDR_PPPOE		= 0x00010000,
 };
 
 /* These segements all have the same PTYPES, but are otherwise distinguished by
@@ -99,6 +113,7 @@ enum ice_flow_seg_hdr {
  *
  *                                gtp_eh_pdu     gtp_eh_pdu_link
  * ICE_FLOW_SEG_HDR_GTPU_IP           0              0
+ * ICE_FLOW_SEG_HDR_GTPU_EH           1              don't care
  * ICE_FLOW_SEG_HDR_GTPU_DWN          1              0
  * ICE_FLOW_SEG_HDR_GTPU_UP           1              1
  */
@@ -114,9 +129,12 @@ enum ice_flow_field {
 	ICE_FLOW_FIELD_IDX_C_VLAN,
 	ICE_FLOW_FIELD_IDX_ETH_TYPE,
 	/* L3 */
-	ICE_FLOW_FIELD_IDX_IP_DSCP,
-	ICE_FLOW_FIELD_IDX_IP_TTL,
-	ICE_FLOW_FIELD_IDX_IP_PROT,
+	ICE_FLOW_FIELD_IDX_IPV4_DSCP,
+	ICE_FLOW_FIELD_IDX_IPV6_DSCP,
+	ICE_FLOW_FIELD_IDX_IPV4_TTL,
+	ICE_FLOW_FIELD_IDX_IPV4_PROT,
+	ICE_FLOW_FIELD_IDX_IPV6_TTL,
+	ICE_FLOW_FIELD_IDX_IPV6_PROT,
 	ICE_FLOW_FIELD_IDX_IPV4_SA,
 	ICE_FLOW_FIELD_IDX_IPV4_DA,
 	ICE_FLOW_FIELD_IDX_IPV6_SA,
@@ -144,6 +162,9 @@ enum ice_flow_field {
 	ICE_FLOW_FIELD_IDX_GTPC_TEID,
 	/* GTPU_IP */
 	ICE_FLOW_FIELD_IDX_GTPU_IP_TEID,
+	/* GTPU_EH */
+	ICE_FLOW_FIELD_IDX_GTPU_EH_TEID,
+	ICE_FLOW_FIELD_IDX_GTPU_EH_QFI,
 	/* GTPU_UP */
 	ICE_FLOW_FIELD_IDX_GTPU_UP_TEID,
 	/* GTPU_DWN */
@@ -232,6 +253,7 @@ struct ice_flow_seg_xtrct {
 	u16 off;	/* Starting offset of the field in header in bytes */
 	u8 idx;		/* Index of FV entry used */
 	u8 disp;	/* Displacement of field in bits fr. FV entry's start */
+	u16 mask;	/* Mask for field */
 };
 
 enum ice_flow_fld_match_type {

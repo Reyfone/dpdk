@@ -45,6 +45,8 @@ _LDLIBS-$(CONFIG_RTE_LIBRTE_PDUMP)          += -lrte_pdump
 _LDLIBS-$(CONFIG_RTE_LIBRTE_DISTRIBUTOR)    += -lrte_distributor
 _LDLIBS-$(CONFIG_RTE_LIBRTE_IP_FRAG)        += -lrte_ip_frag
 _LDLIBS-$(CONFIG_RTE_LIBRTE_METER)          += -lrte_meter
+_LDLIBS-$(CONFIG_RTE_LIBRTE_FIB)            += -lrte_fib
+_LDLIBS-$(CONFIG_RTE_LIBRTE_RIB)            += -lrte_rib
 _LDLIBS-$(CONFIG_RTE_LIBRTE_LPM)            += -lrte_lpm
 _LDLIBS-$(CONFIG_RTE_LIBRTE_ACL)            += -lrte_acl
 _LDLIBS-$(CONFIG_RTE_LIBRTE_TELEMETRY)      += --no-as-needed
@@ -101,7 +103,9 @@ ifeq ($(CONFIG_RTE_EXEC_ENV_LINUX),y)
 _LDLIBS-$(CONFIG_RTE_LIBRTE_KNI)            += -lrte_kni
 endif
 
-ifeq ($(CONFIG_RTE_LIBRTE_PMD_OCTEONTX_CRYPTO),y)
+OTX-CPT-y := $(CONFIG_RTE_LIBRTE_PMD_OCTEONTX_CRYPTO)
+OTX-CPT-y += $(CONFIG_RTE_LIBRTE_PMD_OCTEONTX2_CRYPTO)
+ifeq ($(findstring y,$(OTX-CPT-y)),y)
 _LDLIBS-y += -lrte_common_cpt
 endif
 
@@ -109,6 +113,7 @@ ifeq ($(CONFIG_RTE_LIBRTE_PMD_OCTEONTX_SSOVF)$(CONFIG_RTE_LIBRTE_OCTEONTX_MEMPOO
 _LDLIBS-y += -lrte_common_octeontx
 endif
 OCTEONTX2-y := $(CONFIG_RTE_LIBRTE_OCTEONTX2_MEMPOOL)
+OCTEONTX2-y += $(CONFIG_RTE_LIBRTE_PMD_OCTEONTX2_CRYPTO)
 OCTEONTX2-y += $(CONFIG_RTE_LIBRTE_PMD_OCTEONTX2_EVENTDEV)
 OCTEONTX2-y += $(CONFIG_RTE_LIBRTE_PMD_OCTEONTX2_DMA_RAWDEV)
 OCTEONTX2-y += $(CONFIG_RTE_LIBRTE_OCTEONTX2_PMD)
@@ -123,11 +128,13 @@ ifneq (,$(findstring y,$(MVEP-y)))
 _LDLIBS-y += -lrte_common_mvep -L$(LIBMUSDK_PATH)/lib -lmusdk
 endif
 
-ifeq ($(CONFIG_RTE_LIBRTE_DPAA_BUS),y)
-_LDLIBS-$(CONFIG_RTE_LIBRTE_COMMON_DPAAX)   += -lrte_common_dpaax
-endif
-ifeq ($(CONFIG_RTE_LIBRTE_FSLMC_BUS),y)
-_LDLIBS-$(CONFIG_RTE_LIBRTE_COMMON_DPAAX)   += -lrte_common_dpaax
+DPAAX-y := $(CONFIG_RTE_LIBRTE_DPAA_BUS)
+DPAAX-y += $(CONFIG_RTE_LIBRTE_FSLMC_BUS)
+DPAAX-y += $(CONFIG_RTE_LIBRTE_ENETC_PMD)
+DPAAX-y += $(CONFIG_RTE_LIBRTE_PMD_CAAM_JR)
+DPAAX-y += $(CONFIG_RTE_LIBRTE_PFE_PMD)
+ifeq ($(findstring y,$(DPAAX-y)),y)
+ _LDLIBS-y += -lrte_common_dpaax
 endif
 
 _LDLIBS-$(CONFIG_RTE_LIBRTE_PCI_BUS)        += -lrte_bus_pci
@@ -201,6 +208,7 @@ _LDLIBS-$(CONFIG_RTE_LIBRTE_NFP_PMD)        += -lrte_pmd_nfp
 _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_NULL)       += -lrte_pmd_null
 _LDLIBS-$(CONFIG_RTE_LIBRTE_OCTEONTX2_PMD)  += -lrte_pmd_octeontx2 -lm
 _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_PCAP)       += -lrte_pmd_pcap -lpcap
+_LDLIBS-$(CONFIG_RTE_LIBRTE_PFE_PMD)        += -lrte_pmd_pfe
 _LDLIBS-$(CONFIG_RTE_LIBRTE_QEDE_PMD)       += -lrte_pmd_qede
 _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_RING)       += -lrte_pmd_ring
 ifeq ($(CONFIG_RTE_LIBRTE_SCHED),y)
@@ -270,15 +278,16 @@ _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_ARMV8_CRYPTO)    += -L$(ARMV8_CRYPTO_LIB_PATH) -
 _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_MVSAM_CRYPTO) += -L$(LIBMUSDK_PATH)/lib -lrte_pmd_mvsam_crypto -lmusdk
 _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_NITROX)      += -lrte_pmd_nitrox
 _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_OCTEONTX_CRYPTO) += -lrte_pmd_octeontx_crypto
+_LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_OCTEONTX2_CRYPTO) += -lrte_pmd_octeontx2_crypto
 _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_CRYPTO_SCHEDULER) += -lrte_pmd_crypto_scheduler
-ifeq ($(CONFIG_RTE_LIBRTE_SECURITY),y)
 ifeq ($(CONFIG_RTE_EAL_VFIO)$(CONFIG_RTE_LIBRTE_FSLMC_BUS),yy)
 _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_DPAA2_SEC)   += -lrte_pmd_dpaa2_sec
 endif # CONFIG_RTE_LIBRTE_FSLMC_BUS
 ifeq ($(CONFIG_RTE_LIBRTE_DPAA_BUS),y)
 _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_DPAA_SEC)   += -lrte_pmd_dpaa_sec
-_LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_CAAM_JR)   += -lrte_pmd_caam_jr
 endif # CONFIG_RTE_LIBRTE_DPAA_BUS
+ifeq ($(CONFIG_RTE_LIBRTE_SECURITY),y)
+_LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_CAAM_JR)   += -lrte_pmd_caam_jr
 endif # CONFIG_RTE_LIBRTE_SECURITY
 _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_VIRTIO_CRYPTO) += -lrte_pmd_virtio_crypto
 endif # CONFIG_RTE_LIBRTE_CRYPTODEV

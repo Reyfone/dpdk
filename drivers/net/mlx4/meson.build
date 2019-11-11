@@ -21,7 +21,7 @@ if pmd_dlopen
 	]
 endif
 
-libnames = [ 'mnl', 'mlx4', 'ibverbs' ]
+libnames = [ 'mlx4', 'ibverbs' ]
 libs = []
 foreach libname:libnames
 	lib = dependency('lib' + libname, required:false)
@@ -55,7 +55,6 @@ if build
 		sources += files('mlx4_glue.c')
 	endif
 	cflags_options = [
-		'-Wextra',
 		'-std=c11',
 		'-Wno-strict-prototypes',
 		'-D_BSD_SOURCE',

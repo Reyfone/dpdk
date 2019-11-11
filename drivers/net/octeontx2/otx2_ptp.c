@@ -104,7 +104,7 @@ nix_ptp_config(struct rte_eth_dev *eth_dev, int en)
 	struct otx2_mbox *mbox = dev->mbox;
 	uint8_t rc = -EINVAL;
 
-	if (otx2_dev_is_vf(dev))
+	if (otx2_dev_is_vf_or_sdp(dev))
 		return rc;
 
 	if (en) {
@@ -168,7 +168,7 @@ otx2_nix_timesync_enable(struct rte_eth_dev *eth_dev)
 	}
 
 	/* If we are VF, no further action can be taken */
-	if (otx2_dev_is_vf(dev))
+	if (otx2_dev_is_vf_or_sdp(dev))
 		return -EINVAL;
 
 	if (!(dev->rx_offload_flags & NIX_RX_OFFLOAD_PTYPE_F)) {
@@ -222,7 +222,7 @@ otx2_nix_timesync_disable(struct rte_eth_dev *eth_dev)
 	}
 
 	/* If we are VF, nothing else can be done */
-	if (otx2_dev_is_vf(dev))
+	if (otx2_dev_is_vf_or_sdp(dev))
 		return -EINVAL;
 
 	dev->rx_offloads &= ~DEV_RX_OFFLOAD_TIMESTAMP;
@@ -259,9 +259,9 @@ otx2_nix_timesync_read_rx_timestamp(struct rte_eth_dev *eth_dev,
 	*timestamp = rte_ns_to_timespec(ns);
 	tstamp->rx_ready = 0;
 
-	otx2_nix_dbg("rx timestamp: %llu sec: %lu nsec %lu",
-		     (unsigned long long)tstamp->rx_tstamp, timestamp->tv_sec,
-		     timestamp->tv_nsec);
+	otx2_nix_dbg("rx timestamp: %"PRIu64" sec: %"PRIu64" nsec %"PRIu64"",
+		     (uint64_t)tstamp->rx_tstamp, (uint64_t)timestamp->tv_sec,
+		     (uint64_t)timestamp->tv_nsec);
 
 	return 0;
 }
@@ -280,9 +280,9 @@ otx2_nix_timesync_read_tx_timestamp(struct rte_eth_dev *eth_dev,
 	ns = rte_timecounter_update(&dev->tx_tstamp_tc, *tstamp->tx_tstamp);
 	*timestamp = rte_ns_to_timespec(ns);
 
-	otx2_nix_dbg("tx timestamp: %llu sec: %lu nsec %lu",
-		     *(unsigned long long *)tstamp->tx_tstamp,
-		     timestamp->tv_sec, timestamp->tv_nsec);
+	otx2_nix_dbg("tx timestamp: %"PRIu64" sec: %"PRIu64" nsec %"PRIu64"",
+		     *tstamp->tx_tstamp, (uint64_t)timestamp->tv_sec,
+		     (uint64_t)timestamp->tv_nsec);
 
 	*tstamp->tx_tstamp = 0;
 	rte_wmb();
@@ -358,7 +358,8 @@ otx2_nix_timesync_read_time(struct rte_eth_dev *eth_dev, struct timespec *ts)
 	ns = rte_timecounter_update(&dev->systime_tc, rsp->clk);
 	*ts = rte_ns_to_timespec(ns);
 
-	otx2_nix_dbg("PTP time read: %ld.%09ld", ts->tv_sec, ts->tv_nsec);
+	otx2_nix_dbg("PTP time read: %"PRIu64" .%09"PRIu64"",
+		     (uint64_t)ts->tv_sec, (uint64_t)ts->tv_nsec);
 
 	return 0;
 }

@@ -511,6 +511,179 @@ ice_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 	return 0;
 }
 
+static enum ice_status
+ice_fdir_program_hw_rx_queue(struct ice_rx_queue *rxq)
+{
+	struct ice_vsi *vsi = rxq->vsi;
+	struct ice_hw *hw = ICE_VSI_TO_HW(vsi);
+	uint32_t rxdid = ICE_RXDID_COMMS_GENERIC;
+	struct ice_rlan_ctx rx_ctx;
+	enum ice_status err;
+	uint32_t regval;
+
+	rxq->rx_hdr_len = 0;
+	rxq->rx_buf_len = 1024;
+
+	memset(&rx_ctx, 0, sizeof(rx_ctx));
+
+	rx_ctx.base = rxq->rx_ring_dma / ICE_QUEUE_BASE_ADDR_UNIT;
+	rx_ctx.qlen = rxq->nb_rx_desc;
+	rx_ctx.dbuf = rxq->rx_buf_len >> ICE_RLAN_CTX_DBUF_S;
+	rx_ctx.hbuf = rxq->rx_hdr_len >> ICE_RLAN_CTX_HBUF_S;
+	rx_ctx.dtype = 0; /* No Header Split mode */
+#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
+	rx_ctx.dsize = 1; /* 32B descriptors */
+#endif
+	rx_ctx.rxmax = RTE_ETHER_MAX_LEN;
+	/* TPH: Transaction Layer Packet (TLP) processing hints */
+	rx_ctx.tphrdesc_ena = 1;
+	rx_ctx.tphwdesc_ena = 1;
+	rx_ctx.tphdata_ena = 1;
+	rx_ctx.tphhead_ena = 1;
+	/* Low Receive Queue Threshold defined in 64 descriptors units.
+	 * When the number of free descriptors goes below the lrxqthresh,
+	 * an immediate interrupt is triggered.
+	 */
+	rx_ctx.lrxqthresh = 2;
+	/*default use 32 byte descriptor, vlan tag extract to L2TAG2(1st)*/
+	rx_ctx.l2tsel = 1;
+	rx_ctx.showiv = 0;
+	rx_ctx.crcstrip = (rxq->crc_len == 0) ? 1 : 0;
+
+	/* Enable Flexible Descriptors in the queue context which
+	 * allows this driver to select a specific receive descriptor format
+	 */
+	regval = (rxdid << QRXFLXP_CNTXT_RXDID_IDX_S) &
+		QRXFLXP_CNTXT_RXDID_IDX_M;
+
+	/* increasing context priority to pick up profile ID;
+	 * default is 0x01; setting to 0x03 to ensure profile
+	 * is programming if prev context is of same priority
+	 */
+	regval |= (0x03 << QRXFLXP_CNTXT_RXDID_PRIO_S) &
+		QRXFLXP_CNTXT_RXDID_PRIO_M;
+
+	ICE_WRITE_REG(hw, QRXFLXP_CNTXT(rxq->reg_idx), regval);
+
+	err = ice_clear_rxq_ctx(hw, rxq->reg_idx);
+	if (err) {
+		PMD_DRV_LOG(ERR, "Failed to clear Lan Rx queue (%u) context",
+			    rxq->queue_id);
+		return -EINVAL;
+	}
+	err = ice_write_rxq_ctx(hw, &rx_ctx, rxq->reg_idx);
+	if (err) {
+		PMD_DRV_LOG(ERR, "Failed to write Lan Rx queue (%u) context",
+			    rxq->queue_id);
+		return -EINVAL;
+	}
+
+	rxq->qrx_tail = hw->hw_addr + QRX_TAIL(rxq->reg_idx);
+
+	/* Init the Rx tail register*/
+	ICE_PCI_REG_WRITE(rxq->qrx_tail, rxq->nb_rx_desc - 1);
+
+	return 0;
+}
+
+int
+ice_fdir_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id)
+{
+	struct ice_rx_queue *rxq;
+	int err;
+	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct ice_pf *pf = ICE_DEV_PRIVATE_TO_PF(dev->data->dev_private);
+
+	PMD_INIT_FUNC_TRACE();
+
+	rxq = pf->fdir.rxq;
+	if (!rxq || !rxq->q_set) {
+		PMD_DRV_LOG(ERR, "FDIR RX queue %u not available or setup",
+			    rx_queue_id);
+		return -EINVAL;
+	}
+
+	err = ice_fdir_program_hw_rx_queue(rxq);
+	if (err) {
+		PMD_DRV_LOG(ERR, "fail to program FDIR RX queue %u",
+			    rx_queue_id);
+		return -EIO;
+	}
+
+	/* Init the RX tail register. */
+	ICE_PCI_REG_WRITE(rxq->qrx_tail, rxq->nb_rx_desc - 1);
+
+	err = ice_switch_rx_queue(hw, rxq->reg_idx, TRUE);
+	if (err) {
+		PMD_DRV_LOG(ERR, "Failed to switch FDIR RX queue %u on",
+			    rx_queue_id);
+
+		ice_reset_rx_queue(rxq);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+int
+ice_fdir_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id)
+{
+	struct ice_pf *pf = ICE_DEV_PRIVATE_TO_PF(dev->data->dev_private);
+	struct ice_tx_queue *txq;
+	int err;
+	struct ice_vsi *vsi;
+	struct ice_hw *hw;
+	struct ice_aqc_add_tx_qgrp txq_elem;
+	struct ice_tlan_ctx tx_ctx;
+
+	PMD_INIT_FUNC_TRACE();
+
+	txq = pf->fdir.txq;
+	if (!txq || !txq->q_set) {
+		PMD_DRV_LOG(ERR, "FDIR TX queue %u is not available or setup",
+			    tx_queue_id);
+		return -EINVAL;
+	}
+
+	vsi = txq->vsi;
+	hw = ICE_VSI_TO_HW(vsi);
+
+	memset(&txq_elem, 0, sizeof(txq_elem));
+	memset(&tx_ctx, 0, sizeof(tx_ctx));
+	txq_elem.num_txqs = 1;
+	txq_elem.txqs[0].txq_id = rte_cpu_to_le_16(txq->reg_idx);
+
+	tx_ctx.base = txq->tx_ring_dma / ICE_QUEUE_BASE_ADDR_UNIT;
+	tx_ctx.qlen = txq->nb_tx_desc;
+	tx_ctx.pf_num = hw->pf_id;
+	tx_ctx.vmvf_type = ICE_TLAN_CTX_VMVF_TYPE_PF;
+	tx_ctx.src_vsi = vsi->vsi_id;
+	tx_ctx.port_num = hw->port_info->lport;
+	tx_ctx.tso_ena = 1; /* tso enable */
+	tx_ctx.tso_qnum = txq->reg_idx; /* index for tso state structure */
+	tx_ctx.legacy_int = 1; /* Legacy or Advanced Host Interface */
+
+	ice_set_ctx((uint8_t *)&tx_ctx, txq_elem.txqs[0].txq_ctx,
+		    ice_tlan_ctx_info);
+
+	txq->qtx_tail = hw->hw_addr + QTX_COMM_DBELL(txq->reg_idx);
+
+	/* Init the Tx tail register*/
+	ICE_PCI_REG_WRITE(txq->qtx_tail, 0);
+
+	/* Fix me, we assume TC always 0 here */
+	err = ice_ena_vsi_txq(hw->port_info, vsi->idx, 0, tx_queue_id, 1,
+			      &txq_elem, sizeof(txq_elem), NULL);
+	if (err) {
+		PMD_DRV_LOG(ERR, "Failed to add FDIR txq");
+		return -EIO;
+	}
+	/* store the schedule node id */
+	txq->q_teid = txq_elem.txqs[0].q_teid;
+
+	return 0;
+}
+
 /* Free all mbufs for descriptors in tx queue */
 static void
 _ice_tx_queue_release_mbufs(struct ice_tx_queue *txq)
@@ -612,6 +785,63 @@ ice_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 	ice_tx_queue_release_mbufs(txq);
 	ice_reset_tx_queue(txq);
 	dev->data->tx_queue_state[tx_queue_id] = RTE_ETH_QUEUE_STATE_STOPPED;
+
+	return 0;
+}
+
+int
+ice_fdir_rx_queue_stop(struct rte_eth_dev *dev, uint16_t rx_queue_id)
+{
+	struct ice_rx_queue *rxq;
+	int err;
+	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct ice_pf *pf = ICE_DEV_PRIVATE_TO_PF(dev->data->dev_private);
+
+	rxq = pf->fdir.rxq;
+
+	err = ice_switch_rx_queue(hw, rxq->reg_idx, FALSE);
+	if (err) {
+		PMD_DRV_LOG(ERR, "Failed to switch FDIR RX queue %u off",
+			    rx_queue_id);
+		return -EINVAL;
+	}
+	ice_rx_queue_release_mbufs(rxq);
+
+	return 0;
+}
+
+int
+ice_fdir_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id)
+{
+	struct ice_tx_queue *txq;
+	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct ice_pf *pf = ICE_DEV_PRIVATE_TO_PF(dev->data->dev_private);
+	struct ice_vsi *vsi = pf->main_vsi;
+	enum ice_status status;
+	uint16_t q_ids[1];
+	uint32_t q_teids[1];
+	uint16_t q_handle = tx_queue_id;
+
+	txq = pf->fdir.txq;
+	if (!txq) {
+		PMD_DRV_LOG(ERR, "TX queue %u is not available",
+			    tx_queue_id);
+		return -EINVAL;
+	}
+	vsi = txq->vsi;
+
+	q_ids[0] = txq->reg_idx;
+	q_teids[0] = txq->q_teid;
+
+	/* Fix me, we assume TC always 0 here */
+	status = ice_dis_vsi_txq(hw->port_info, vsi->idx, 0, 1, &q_handle,
+				 q_ids, q_teids, ICE_NO_RESET, 0, NULL);
+	if (status != ICE_SUCCESS) {
+		PMD_DRV_LOG(DEBUG, "Failed to disable Lan Tx queue");
+		return -EINVAL;
+	}
+
+	ice_tx_queue_release_mbufs(txq);
 
 	return 0;
 }
@@ -1131,6 +1361,11 @@ ice_rxd_to_pkt_fields(struct rte_mbuf *mb,
 		xtr->type = ice_rxdid_to_proto_xtr_type(desc->rxdid);
 		xtr->magic = PROTO_XTR_MAGIC_ID;
 	}
+
+	if (desc->flow_id != 0xFFFFFFFF) {
+		mb->ol_flags |= PKT_RX_FDIR | PKT_RX_FDIR_ID;
+		mb->hash.fdir.hi = rte_le_to_cpu_32(desc->flow_id);
+	}
 #endif
 }
 
@@ -1538,9 +1773,14 @@ ice_recv_scattered_pkts(void *rx_queue,
 const uint32_t *
 ice_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 {
-	static const uint32_t ptypes[] = {
+	struct ice_adapter *ad =
+		ICE_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+	const uint32_t *ptypes;
+
+	static const uint32_t ptypes_os[] = {
 		/* refers to ice_get_default_pkt_type() */
 		RTE_PTYPE_L2_ETHER,
+		RTE_PTYPE_L2_ETHER_TIMESYNC,
 		RTE_PTYPE_L2_ETHER_LLDP,
 		RTE_PTYPE_L2_ETHER_ARP,
 		RTE_PTYPE_L3_IPV4_EXT_UNKNOWN,
@@ -1554,7 +1794,34 @@ ice_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 		RTE_PTYPE_TUNNEL_GRENAT,
 		RTE_PTYPE_TUNNEL_IP,
 		RTE_PTYPE_INNER_L2_ETHER,
-		RTE_PTYPE_INNER_L2_ETHER_VLAN,
+		RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN,
+		RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN,
+		RTE_PTYPE_INNER_L4_FRAG,
+		RTE_PTYPE_INNER_L4_ICMP,
+		RTE_PTYPE_INNER_L4_NONFRAG,
+		RTE_PTYPE_INNER_L4_SCTP,
+		RTE_PTYPE_INNER_L4_TCP,
+		RTE_PTYPE_INNER_L4_UDP,
+		RTE_PTYPE_UNKNOWN
+	};
+
+	static const uint32_t ptypes_comms[] = {
+		/* refers to ice_get_default_pkt_type() */
+		RTE_PTYPE_L2_ETHER,
+		RTE_PTYPE_L2_ETHER_TIMESYNC,
+		RTE_PTYPE_L2_ETHER_LLDP,
+		RTE_PTYPE_L2_ETHER_ARP,
+		RTE_PTYPE_L3_IPV4_EXT_UNKNOWN,
+		RTE_PTYPE_L3_IPV6_EXT_UNKNOWN,
+		RTE_PTYPE_L4_FRAG,
+		RTE_PTYPE_L4_ICMP,
+		RTE_PTYPE_L4_NONFRAG,
+		RTE_PTYPE_L4_SCTP,
+		RTE_PTYPE_L4_TCP,
+		RTE_PTYPE_L4_UDP,
+		RTE_PTYPE_TUNNEL_GRENAT,
+		RTE_PTYPE_TUNNEL_IP,
+		RTE_PTYPE_INNER_L2_ETHER,
 		RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN,
 		RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN,
 		RTE_PTYPE_INNER_L4_FRAG,
@@ -1565,8 +1832,14 @@ ice_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 		RTE_PTYPE_INNER_L4_UDP,
 		RTE_PTYPE_TUNNEL_GTPC,
 		RTE_PTYPE_TUNNEL_GTPU,
+		RTE_PTYPE_L2_ETHER_PPPOE,
 		RTE_PTYPE_UNKNOWN
 	};
+
+	if (ad->active_pkg_type == ICE_PKG_TYPE_COMMS)
+		ptypes = ptypes_comms;
+	else
+		ptypes = ptypes_os;
 
 	if (dev->rx_pkt_burst == ice_recv_pkts ||
 #ifdef RTE_LIBRTE_ICE_RX_ALLOW_BULK_ALLOC
@@ -1682,6 +1955,128 @@ ice_free_queues(struct rte_eth_dev *dev)
 		dev->data->tx_queues[i] = NULL;
 	}
 	dev->data->nb_tx_queues = 0;
+}
+
+#define ICE_FDIR_NUM_TX_DESC  ICE_MIN_RING_DESC
+#define ICE_FDIR_NUM_RX_DESC  ICE_MIN_RING_DESC
+
+int
+ice_fdir_setup_tx_resources(struct ice_pf *pf)
+{
+	struct ice_tx_queue *txq;
+	const struct rte_memzone *tz = NULL;
+	uint32_t ring_size;
+	struct rte_eth_dev *dev;
+
+	if (!pf) {
+		PMD_DRV_LOG(ERR, "PF is not available");
+		return -EINVAL;
+	}
+
+	dev = pf->adapter->eth_dev;
+
+	/* Allocate the TX queue data structure. */
+	txq = rte_zmalloc_socket("ice fdir tx queue",
+				 sizeof(struct ice_tx_queue),
+				 RTE_CACHE_LINE_SIZE,
+				 SOCKET_ID_ANY);
+	if (!txq) {
+		PMD_DRV_LOG(ERR, "Failed to allocate memory for "
+			    "tx queue structure.");
+		return -ENOMEM;
+	}
+
+	/* Allocate TX hardware ring descriptors. */
+	ring_size = sizeof(struct ice_tx_desc) * ICE_FDIR_NUM_TX_DESC;
+	ring_size = RTE_ALIGN(ring_size, ICE_DMA_MEM_ALIGN);
+
+	tz = rte_eth_dma_zone_reserve(dev, "fdir_tx_ring",
+				      ICE_FDIR_QUEUE_ID, ring_size,
+				      ICE_RING_BASE_ALIGN, SOCKET_ID_ANY);
+	if (!tz) {
+		ice_tx_queue_release(txq);
+		PMD_DRV_LOG(ERR, "Failed to reserve DMA memory for TX.");
+		return -ENOMEM;
+	}
+
+	txq->nb_tx_desc = ICE_FDIR_NUM_TX_DESC;
+	txq->queue_id = ICE_FDIR_QUEUE_ID;
+	txq->reg_idx = pf->fdir.fdir_vsi->base_queue;
+	txq->vsi = pf->fdir.fdir_vsi;
+
+	txq->tx_ring_dma = tz->iova;
+	txq->tx_ring = (struct ice_tx_desc *)tz->addr;
+	/*
+	 * don't need to allocate software ring and reset for the fdir
+	 * program queue just set the queue has been configured.
+	 */
+	txq->q_set = TRUE;
+	pf->fdir.txq = txq;
+
+	txq->tx_rel_mbufs = _ice_tx_queue_release_mbufs;
+
+	return ICE_SUCCESS;
+}
+
+int
+ice_fdir_setup_rx_resources(struct ice_pf *pf)
+{
+	struct ice_rx_queue *rxq;
+	const struct rte_memzone *rz = NULL;
+	uint32_t ring_size;
+	struct rte_eth_dev *dev;
+
+	if (!pf) {
+		PMD_DRV_LOG(ERR, "PF is not available");
+		return -EINVAL;
+	}
+
+	dev = pf->adapter->eth_dev;
+
+	/* Allocate the RX queue data structure. */
+	rxq = rte_zmalloc_socket("ice fdir rx queue",
+				 sizeof(struct ice_rx_queue),
+				 RTE_CACHE_LINE_SIZE,
+				 SOCKET_ID_ANY);
+	if (!rxq) {
+		PMD_DRV_LOG(ERR, "Failed to allocate memory for "
+			    "rx queue structure.");
+		return -ENOMEM;
+	}
+
+	/* Allocate RX hardware ring descriptors. */
+	ring_size = sizeof(union ice_rx_flex_desc) * ICE_FDIR_NUM_RX_DESC;
+	ring_size = RTE_ALIGN(ring_size, ICE_DMA_MEM_ALIGN);
+
+	rz = rte_eth_dma_zone_reserve(dev, "fdir_rx_ring",
+				      ICE_FDIR_QUEUE_ID, ring_size,
+				      ICE_RING_BASE_ALIGN, SOCKET_ID_ANY);
+	if (!rz) {
+		ice_rx_queue_release(rxq);
+		PMD_DRV_LOG(ERR, "Failed to reserve DMA memory for RX.");
+		return -ENOMEM;
+	}
+
+	rxq->nb_rx_desc = ICE_FDIR_NUM_RX_DESC;
+	rxq->queue_id = ICE_FDIR_QUEUE_ID;
+	rxq->reg_idx = pf->fdir.fdir_vsi->base_queue;
+	rxq->vsi = pf->fdir.fdir_vsi;
+
+	rxq->rx_ring_dma = rz->iova;
+	memset(rz->addr, 0, ICE_FDIR_NUM_RX_DESC *
+	       sizeof(union ice_rx_flex_desc));
+	rxq->rx_ring = (union ice_rx_flex_desc *)rz->addr;
+
+	/*
+	 * Don't need to allocate software ring and reset for the fdir
+	 * rx queue, just set the queue has been configured.
+	 */
+	rxq->q_set = TRUE;
+	pf->fdir.rxq = rxq;
+
+	rxq->rx_rel_mbufs = _ice_rx_queue_release_mbufs;
+
+	return ICE_SUCCESS;
 }
 
 uint16_t
@@ -1806,6 +2201,7 @@ ice_parse_tunneling_params(uint64_t ol_flags,
 		/* for non UDP / GRE tunneling, set to 00b */
 		break;
 	case PKT_TX_TUNNEL_VXLAN:
+	case PKT_TX_TUNNEL_GTP:
 	case PKT_TX_TUNNEL_GENEVE:
 		*cd_tunneling |= ICE_TXD_CTX_UDP_TUNNELING;
 		break;
@@ -2435,6 +2831,41 @@ ice_set_rx_function(struct rte_eth_dev *dev)
 	}
 }
 
+static const struct {
+	eth_rx_burst_t pkt_burst;
+	const char *info;
+} ice_rx_burst_infos[] = {
+	{ ice_recv_scattered_pkts,          "Scalar Scattered" },
+	{ ice_recv_pkts_bulk_alloc,         "Scalar Bulk Alloc" },
+	{ ice_recv_pkts,                    "Scalar" },
+#ifdef RTE_ARCH_X86
+	{ ice_recv_scattered_pkts_vec_avx2, "Vector AVX2 Scattered" },
+	{ ice_recv_pkts_vec_avx2,           "Vector AVX2" },
+	{ ice_recv_scattered_pkts_vec,      "Vector SSE Scattered" },
+	{ ice_recv_pkts_vec,                "Vector SSE" },
+#endif
+};
+
+int
+ice_rx_burst_mode_get(struct rte_eth_dev *dev, __rte_unused uint16_t queue_id,
+		      struct rte_eth_burst_mode *mode)
+{
+	eth_rx_burst_t pkt_burst = dev->rx_pkt_burst;
+	int ret = -EINVAL;
+	unsigned int i;
+
+	for (i = 0; i < RTE_DIM(ice_rx_burst_infos); ++i) {
+		if (pkt_burst == ice_rx_burst_infos[i].pkt_burst) {
+			snprintf(mode->info, sizeof(mode->info), "%s",
+				 ice_rx_burst_infos[i].info);
+			ret = 0;
+			break;
+		}
+	}
+
+	return ret;
+}
+
 void __attribute__((cold))
 ice_set_tx_function_flag(struct rte_eth_dev *dev, struct ice_tx_queue *txq)
 {
@@ -2558,6 +2989,38 @@ ice_set_tx_function(struct rte_eth_dev *dev)
 	}
 }
 
+static const struct {
+	eth_tx_burst_t pkt_burst;
+	const char *info;
+} ice_tx_burst_infos[] = {
+	{ ice_xmit_pkts_simple,   "Scalar Simple" },
+	{ ice_xmit_pkts,          "Scalar" },
+#ifdef RTE_ARCH_X86
+	{ ice_xmit_pkts_vec_avx2, "Vector AVX2" },
+	{ ice_xmit_pkts_vec,      "Vector SSE" },
+#endif
+};
+
+int
+ice_tx_burst_mode_get(struct rte_eth_dev *dev, __rte_unused uint16_t queue_id,
+		      struct rte_eth_burst_mode *mode)
+{
+	eth_tx_burst_t pkt_burst = dev->tx_pkt_burst;
+	int ret = -EINVAL;
+	unsigned int i;
+
+	for (i = 0; i < RTE_DIM(ice_tx_burst_infos); ++i) {
+		if (pkt_burst == ice_tx_burst_infos[i].pkt_burst) {
+			snprintf(mode->info, sizeof(mode->info), "%s",
+				 ice_tx_burst_infos[i].info);
+			ret = 0;
+			break;
+		}
+	}
+
+	return ret;
+}
+
 /* For each value it means, datasheet of hardware can tell more details
  *
  * @note: fix ice_dev_supported_ptypes_get() if any change here.
@@ -2570,7 +3033,8 @@ ice_get_default_pkt_type(uint16_t ptype)
 		/* L2 types */
 		/* [0] reserved */
 		[1] = RTE_PTYPE_L2_ETHER,
-		/* [2] - [5] reserved */
+		[2] = RTE_PTYPE_L2_ETHER_TIMESYNC,
+		/* [3] - [5] reserved */
 		[6] = RTE_PTYPE_L2_ETHER_LLDP,
 		/* [7] - [10] reserved */
 		[11] = RTE_PTYPE_L2_ETHER_ARP,
@@ -2760,77 +3224,7 @@ ice_get_default_pkt_type(uint16_t ptype)
 		       RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
 		       RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
 		       RTE_PTYPE_INNER_L4_ICMP,
-
-		/* IPv4 --> GRE/Teredo/VXLAN --> MAC/VLAN */
-		[73] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-		       RTE_PTYPE_TUNNEL_GRENAT |
-		       RTE_PTYPE_INNER_L2_ETHER_VLAN,
-
-		/* IPv4 --> GRE/Teredo/VXLAN --> MAC/VLAN --> IPv4 */
-		[74] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-		       RTE_PTYPE_TUNNEL_GRENAT |
-		       RTE_PTYPE_INNER_L2_ETHER_VLAN |
-		       RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-		       RTE_PTYPE_INNER_L4_FRAG,
-		[75] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-		       RTE_PTYPE_TUNNEL_GRENAT |
-		       RTE_PTYPE_INNER_L2_ETHER_VLAN |
-		       RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-		       RTE_PTYPE_INNER_L4_NONFRAG,
-		[76] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-		       RTE_PTYPE_TUNNEL_GRENAT |
-		       RTE_PTYPE_INNER_L2_ETHER_VLAN |
-		       RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-		       RTE_PTYPE_INNER_L4_UDP,
-		/* [77] reserved */
-		[78] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-		       RTE_PTYPE_TUNNEL_GRENAT |
-		       RTE_PTYPE_INNER_L2_ETHER_VLAN |
-		       RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-		       RTE_PTYPE_INNER_L4_TCP,
-		[79] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-		       RTE_PTYPE_TUNNEL_GRENAT |
-		       RTE_PTYPE_INNER_L2_ETHER_VLAN |
-		       RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-		       RTE_PTYPE_INNER_L4_SCTP,
-		[80] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-		       RTE_PTYPE_TUNNEL_GRENAT |
-		       RTE_PTYPE_INNER_L2_ETHER_VLAN |
-		       RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-		       RTE_PTYPE_INNER_L4_ICMP,
-
-		/* IPv4 --> GRE/Teredo/VXLAN --> MAC/VLAN --> IPv6 */
-		[81] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-		       RTE_PTYPE_TUNNEL_GRENAT |
-		       RTE_PTYPE_INNER_L2_ETHER_VLAN |
-		       RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-		       RTE_PTYPE_INNER_L4_FRAG,
-		[82] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-		       RTE_PTYPE_TUNNEL_GRENAT |
-		       RTE_PTYPE_INNER_L2_ETHER_VLAN |
-		       RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-		       RTE_PTYPE_INNER_L4_NONFRAG,
-		[83] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-		       RTE_PTYPE_TUNNEL_GRENAT |
-		       RTE_PTYPE_INNER_L2_ETHER_VLAN |
-		       RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-		       RTE_PTYPE_INNER_L4_UDP,
-		/* [84] reserved */
-		[85] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-		       RTE_PTYPE_TUNNEL_GRENAT |
-		       RTE_PTYPE_INNER_L2_ETHER_VLAN |
-		       RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-		       RTE_PTYPE_INNER_L4_TCP,
-		[86] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-		       RTE_PTYPE_TUNNEL_GRENAT |
-		       RTE_PTYPE_INNER_L2_ETHER_VLAN |
-		       RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-		       RTE_PTYPE_INNER_L4_SCTP,
-		[87] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-		       RTE_PTYPE_TUNNEL_GRENAT |
-		       RTE_PTYPE_INNER_L2_ETHER_VLAN |
-		       RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-		       RTE_PTYPE_INNER_L4_ICMP,
+		/* [73] - [87] reserved */
 
 		/* Non tunneled IPv6 */
 		[88] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
@@ -2844,7 +3238,7 @@ ice_get_default_pkt_type(uint16_t ptype)
 		       RTE_PTYPE_L4_TCP,
 		[93] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
 		       RTE_PTYPE_L4_SCTP,
-		[94] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+		[94] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
 		       RTE_PTYPE_L4_ICMP,
 
 		/* IPv6 --> IPv4 */
@@ -3016,96 +3410,154 @@ ice_get_default_pkt_type(uint16_t ptype)
 			RTE_PTYPE_TUNNEL_GRENAT | RTE_PTYPE_INNER_L2_ETHER |
 			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
 			RTE_PTYPE_INNER_L4_ICMP,
+		/* [139] - [299] reserved */
 
-		/* IPv6 --> GRE/Teredo/VXLAN --> MAC/VLAN */
-		[139] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN,
+		/* PPPoE */
+		[300] = RTE_PTYPE_L2_ETHER_PPPOE,
+		[301] = RTE_PTYPE_L2_ETHER_PPPOE,
 
-		/* IPv6 --> GRE/Teredo/VXLAN --> MAC/VLAN --> IPv4 */
-		[140] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
+		/* PPPoE --> IPv4 */
+		[302] = RTE_PTYPE_L2_ETHER_PPPOE |
+			RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_FRAG,
+		[303] = RTE_PTYPE_L2_ETHER_PPPOE |
+			RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_NONFRAG,
+		[304] = RTE_PTYPE_L2_ETHER_PPPOE |
+			RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[305] = RTE_PTYPE_L2_ETHER_PPPOE |
+			RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_TCP,
+		[306] = RTE_PTYPE_L2_ETHER_PPPOE |
+			RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_SCTP,
+		[307] = RTE_PTYPE_L2_ETHER_PPPOE |
+			RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_ICMP,
+
+		/* PPPoE --> IPv6 */
+		[308] = RTE_PTYPE_L2_ETHER_PPPOE |
+			RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_FRAG,
+		[309] = RTE_PTYPE_L2_ETHER_PPPOE |
+			RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_NONFRAG,
+		[310] = RTE_PTYPE_L2_ETHER_PPPOE |
+			RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[311] = RTE_PTYPE_L2_ETHER_PPPOE |
+			RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_TCP,
+		[312] = RTE_PTYPE_L2_ETHER_PPPOE |
+			RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_SCTP,
+		[313] = RTE_PTYPE_L2_ETHER_PPPOE |
+			RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_ICMP,
+		/* [314] - [324] reserved */
+
+		/* IPv4/IPv6 --> GTPC/GTPU */
+		[325] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPC,
+		[326] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPC,
+		[327] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPC,
+		[328] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPC,
+		[329] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU,
+		[330] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU,
+
+		/* IPv4 --> GTPU --> IPv4 */
+		[331] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU |
 			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
 			RTE_PTYPE_INNER_L4_FRAG,
-		[141] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
+		[332] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU |
 			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
 			RTE_PTYPE_INNER_L4_NONFRAG,
-		[142] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
+		[333] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU |
 			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
 			RTE_PTYPE_INNER_L4_UDP,
-		/* [143] reserved */
-		[144] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
+		[334] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU |
 			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
 			RTE_PTYPE_INNER_L4_TCP,
-		[145] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_SCTP,
-		[146] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
+		[335] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU |
 			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
 			RTE_PTYPE_INNER_L4_ICMP,
 
-		/* IPv6 --> GRE/Teredo/VXLAN --> MAC/VLAN --> IPv6 */
-		[147] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
+		/* IPv6 --> GTPU --> IPv4 */
+		[336] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU |
+			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_INNER_L4_FRAG,
+		[337] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU |
+			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_INNER_L4_NONFRAG,
+		[338] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU |
+			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_INNER_L4_UDP,
+		[339] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU |
+			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_INNER_L4_TCP,
+		[340] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU |
+			RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_INNER_L4_ICMP,
+
+		/* IPv4 --> GTPU --> IPv6 */
+		[341] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU |
 			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
 			RTE_PTYPE_INNER_L4_FRAG,
-		[148] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
+		[342] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU |
 			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
 			RTE_PTYPE_INNER_L4_NONFRAG,
-		[149] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
+		[343] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU |
 			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
 			RTE_PTYPE_INNER_L4_UDP,
-		/* [150] reserved */
-		[151] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
+		[344] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU |
 			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
 			RTE_PTYPE_INNER_L4_TCP,
-		[152] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
-			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_INNER_L4_SCTP,
-		[153] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GRENAT |
-			RTE_PTYPE_INNER_L2_ETHER_VLAN |
+		[345] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU |
 			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
 			RTE_PTYPE_INNER_L4_ICMP,
-		/* [154] - [255] reserved */
-		[256] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GTPC,
-		[257] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GTPC,
-		[258] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-				RTE_PTYPE_TUNNEL_GTPU,
-		[259] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
-				RTE_PTYPE_TUNNEL_GTPU,
-		/* [260] - [263] reserved */
-		[264] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GTPC,
-		[265] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-			RTE_PTYPE_TUNNEL_GTPC,
-		[266] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-				RTE_PTYPE_TUNNEL_GTPU,
-		[267] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
-				RTE_PTYPE_TUNNEL_GTPU,
 
+		/* IPv6 --> GTPU --> IPv6 */
+		[346] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU |
+			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_INNER_L4_FRAG,
+		[347] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU |
+			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_INNER_L4_NONFRAG,
+		[348] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU |
+			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_INNER_L4_UDP,
+		[349] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU |
+			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_INNER_L4_TCP,
+		[350] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_TUNNEL_GTPU |
+			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_INNER_L4_ICMP,
 		/* All others reserved */
 	};
 
@@ -3121,4 +3573,50 @@ ice_set_default_ptype_table(struct rte_eth_dev *dev)
 
 	for (i = 0; i < ICE_MAX_PKT_TYPE; i++)
 		ad->ptype_tbl[i] = ice_get_default_pkt_type(i);
+}
+
+#define ICE_FDIR_MAX_WAIT_US 10000
+
+int
+ice_fdir_programming(struct ice_pf *pf, struct ice_fltr_desc *fdir_desc)
+{
+	struct ice_tx_queue *txq = pf->fdir.txq;
+	volatile struct ice_fltr_desc *fdirdp;
+	volatile struct ice_tx_desc *txdp;
+	uint32_t td_cmd;
+	uint16_t i;
+
+	fdirdp = (volatile struct ice_fltr_desc *)
+		(&txq->tx_ring[txq->tx_tail]);
+	fdirdp->qidx_compq_space_stat = fdir_desc->qidx_compq_space_stat;
+	fdirdp->dtype_cmd_vsi_fdid = fdir_desc->dtype_cmd_vsi_fdid;
+
+	txdp = &txq->tx_ring[txq->tx_tail + 1];
+	txdp->buf_addr = rte_cpu_to_le_64(pf->fdir.dma_addr);
+	td_cmd = ICE_TX_DESC_CMD_EOP |
+		ICE_TX_DESC_CMD_RS  |
+		ICE_TX_DESC_CMD_DUMMY;
+
+	txdp->cmd_type_offset_bsz =
+		ice_build_ctob(td_cmd, 0, ICE_FDIR_PKT_LEN, 0);
+
+	txq->tx_tail += 2;
+	if (txq->tx_tail >= txq->nb_tx_desc)
+		txq->tx_tail = 0;
+	/* Update the tx tail register */
+	ICE_PCI_REG_WRITE(txq->qtx_tail, txq->tx_tail);
+	for (i = 0; i < ICE_FDIR_MAX_WAIT_US; i++) {
+		if ((txdp->cmd_type_offset_bsz &
+		     rte_cpu_to_le_64(ICE_TXD_QW1_DTYPE_M)) ==
+		    rte_cpu_to_le_64(ICE_TX_DESC_DTYPE_DESC_DONE))
+			break;
+		rte_delay_us(1);
+	}
+	if (i >= ICE_FDIR_MAX_WAIT_US) {
+		PMD_DRV_LOG(ERR,
+			    "Failed to program FDIR filter: time out to get DD on tx queue.");
+		return -ETIMEDOUT;
+	}
+
+	return 0;
 }

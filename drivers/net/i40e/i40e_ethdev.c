@@ -502,6 +502,8 @@ static const struct eth_dev_ops i40e_eth_dev_ops = {
 	.filter_ctrl                  = i40e_dev_filter_ctrl,
 	.rxq_info_get                 = i40e_rxq_info_get,
 	.txq_info_get                 = i40e_txq_info_get,
+	.rx_burst_mode_get            = i40e_rx_burst_mode_get,
+	.tx_burst_mode_get            = i40e_tx_burst_mode_get,
 	.mirror_rule_set              = i40e_mirror_rule_set,
 	.mirror_rule_reset            = i40e_mirror_rule_reset,
 	.timesync_enable              = i40e_timesync_enable,
@@ -3844,6 +3846,11 @@ i40e_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 	struct i40e_vsi *vsi = pf->main_vsi;
 	struct rte_eth_rxmode *rxmode;
+
+	if (mask & ETH_QINQ_STRIP_MASK) {
+		PMD_DRV_LOG(ERR, "Strip qinq is not supported.");
+		return -ENOTSUP;
+	}
 
 	rxmode = &dev->data->dev_conf.rxmode;
 	if (mask & ETH_VLAN_FILTER_MASK) {
@@ -8478,7 +8485,7 @@ static int
 i40e_add_vxlan_port(struct i40e_pf *pf, uint16_t port, int udp_type)
 {
 	int  idx, ret;
-	uint8_t filter_idx;
+	uint8_t filter_idx = 0;
 	struct i40e_hw *hw = I40E_PF_TO_HW(pf);
 
 	idx = i40e_get_vxlan_port_idx(pf, port);

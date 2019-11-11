@@ -11,9 +11,9 @@
 #include <rte_malloc.h>
 #include <rte_memzone.h>
 #include <rte_version.h>
+#include <rte_io.h>
 
 #include "bnxt.h"
-#include "bnxt_cpr.h"
 #include "bnxt_filter.h"
 #include "bnxt_hwrm.h"
 #include "bnxt_rxq.h"
@@ -24,10 +24,6 @@
 #include "bnxt_vnic.h"
 #include "hsi_struct_def_dpdk.h"
 
-#include <rte_io.h>
-
-#define HWRM_CMD_TIMEOUT		6000000
-#define HWRM_SHORT_CMD_TIMEOUT		50000
 #define HWRM_SPEC_CODE_1_8_3		0x10803
 #define HWRM_VERSION_1_9_1		0x10901
 #define HWRM_VERSION_1_9_2		0x10903
@@ -78,9 +74,9 @@ static void bnxt_hwrm_set_pg_attr(struct bnxt_ring_mem_info *rmem,
 
 /*
  * HWRM Functions (sent to HWRM)
- * These are named bnxt_hwrm_*() and return -1 if bnxt_hwrm_send_message()
- * fails (ie: a timeout), and a positive non-zero HWRM error code if the HWRM
- * command was failed by the ChiMP.
+ * These are named bnxt_hwrm_*() and return 0 on success or -110 if the
+ * HWRM command times out, or a negative error code if the HWRM
+ * command was failed by the FW.
  */
 
 static int bnxt_hwrm_send_message(struct bnxt *bp, void *msg,
@@ -106,9 +102,9 @@ static int bnxt_hwrm_send_message(struct bnxt *bp, void *msg,
 
 	/* For VER_GET command, set timeout as 50ms */
 	if (rte_cpu_to_le_16(req->req_type) == HWRM_VER_GET)
-		timeout = HWRM_SHORT_CMD_TIMEOUT;
-	else
 		timeout = HWRM_CMD_TIMEOUT;
+	else
+		timeout = bp->hwrm_cmd_timeout;
 
 	if (bp->flags & BNXT_FLAG_SHORT_CMD ||
 	    msg_len > bp->max_req_len) {
@@ -180,11 +176,11 @@ static int bnxt_hwrm_send_message(struct bnxt *bp, void *msg,
 }
 
 /*
- * HWRM_PREP() should be used to prepare *ALL* HWRM commands.  It grabs the
+ * HWRM_PREP() should be used to prepare *ALL* HWRM commands. It grabs the
  * spinlock, and does initial processing.
  *
  * HWRM_CHECK_RESULT() returns errors on failure and may not be used.  It
- * releases the spinlock only if it returns.  If the regular int return codes
+ * releases the spinlock only if it returns. If the regular int return codes
  * are not used by the function, HWRM_CHECK_RESULT() should not be used
  * directly, rather it should be copied and modified to suit the function.
  *
@@ -522,7 +518,6 @@ static int bnxt_hwrm_ptp_qcfg(struct bnxt *bp)
 	struct hwrm_port_mac_ptp_qcfg_output *resp = bp->hwrm_cmd_resp_addr;
 	struct bnxt_ptp_cfg *ptp = bp->ptp_cfg;
 
-/*	if (bp->hwrm_spec_code < 0x10801 || ptp)  TBD  */
 	if (ptp)
 		return 0;
 
@@ -864,6 +859,10 @@ int bnxt_hwrm_func_reserve_vf_resc(struct bnxt *bp, bool test)
 		req.num_rsscos_ctxs = rte_cpu_to_le_16(BNXT_VF_RSV_NUM_RSS_CTX);
 		req.num_l2_ctxs = rte_cpu_to_le_16(BNXT_VF_RSV_NUM_L2_CTX);
 		req.num_vnics = rte_cpu_to_le_16(BNXT_VF_RSV_NUM_VNIC);
+	} else if (bp->vf_resv_strategy ==
+		   HWRM_FUNC_RESOURCE_QCAPS_OUTPUT_VF_RESV_STRATEGY_MAXIMAL) {
+		enables |= HWRM_FUNC_VF_CFG_INPUT_ENABLES_NUM_RSSCOS_CTXS;
+		req.num_rsscos_ctxs = rte_cpu_to_le_16(bp->max_rsscos_ctx);
 	}
 
 	if (test)
@@ -969,6 +968,13 @@ int bnxt_hwrm_ver_get(struct bnxt *bp)
 	fw_version |= resp->hwrm_intf_min_8b << 8;
 	fw_version |= resp->hwrm_intf_upd_8b;
 	bp->hwrm_spec_code = fw_version;
+
+	/* def_req_timeout value is in milliseconds */
+	bp->hwrm_cmd_timeout = rte_le_to_cpu_16(resp->def_req_timeout);
+	/* convert timeout to usec */
+	bp->hwrm_cmd_timeout *= 1000;
+	if (!bp->hwrm_cmd_timeout)
+		bp->hwrm_cmd_timeout = HWRM_CMD_TIMEOUT;
 
 	if (resp->hwrm_intf_maj_8b != HWRM_VERSION_MAJOR) {
 		PMD_DRV_LOG(ERR, "Unsupported firmware API version\n");
@@ -1211,8 +1217,9 @@ get_rx_info:
 	HWRM_PREP(req, QUEUE_QPORTCFG, BNXT_USE_CHIMP_MB);
 
 	req.flags = rte_cpu_to_le_32(dir);
-	/* HWRM Version >= 1.9.1 */
-	if (bp->hwrm_spec_code >= HWRM_VERSION_1_9_1)
+	/* HWRM Version >= 1.9.1 only if COS Classification is not required. */
+	if (bp->hwrm_spec_code >= HWRM_VERSION_1_9_1 &&
+	    !(bp->vnic_cap_flags & BNXT_VNIC_CAP_COS_CLASSIFY))
 		req.drv_qmap_cap =
 			HWRM_QUEUE_QPORTCFG_INPUT_DRV_QMAP_CAP_ENABLED;
 	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
@@ -1479,8 +1486,7 @@ int bnxt_hwrm_ring_grp_alloc(struct bnxt *bp, unsigned int idx)
 
 	HWRM_CHECK_RESULT();
 
-	bp->grp_info[idx].fw_grp_id =
-	    rte_le_to_cpu_16(resp->ring_group_id);
+	bp->grp_info[idx].fw_grp_id = rte_le_to_cpu_16(resp->ring_group_id);
 
 	HWRM_UNLOCK();
 
@@ -1538,8 +1544,7 @@ int bnxt_hwrm_stat_ctx_alloc(struct bnxt *bp, struct bnxt_cp_ring_info *cpr,
 
 	req.update_period_ms = rte_cpu_to_le_32(0);
 
-	req.stats_dma_addr =
-	    rte_cpu_to_le_64(cpr->hw_stats_map);
+	req.stats_dma_addr = rte_cpu_to_le_64(cpr->hw_stats_map);
 
 	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
@@ -1592,8 +1597,7 @@ int bnxt_hwrm_vnic_alloc(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 	vnic->lb_rule = (uint16_t)HWRM_NA_SIGNATURE;
 
 skip_ring_grps:
-	vnic->mru = bp->eth_dev->data->mtu + RTE_ETHER_HDR_LEN +
-				RTE_ETHER_CRC_LEN + VLAN_TAG_SIZE;
+	vnic->mru = BNXT_VNIC_MRU(bp->eth_dev->data->mtu);
 	HWRM_PREP(req, VNIC_ALLOC, BNXT_USE_CHIMP_MB);
 
 	if (vnic->func_default)
@@ -1692,10 +1696,29 @@ int bnxt_hwrm_vnic_cfg(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 	HWRM_PREP(req, VNIC_CFG, BNXT_USE_CHIMP_MB);
 
 	if (BNXT_CHIP_THOR(bp)) {
-		struct bnxt_rx_queue *rxq =
-			bp->eth_dev->data->rx_queues[vnic->start_grp_id];
-		struct bnxt_rx_ring_info *rxr = rxq->rx_ring;
-		struct bnxt_cp_ring_info *cpr = rxq->cp_ring;
+		int dflt_rxq = vnic->start_grp_id;
+		struct bnxt_rx_ring_info *rxr;
+		struct bnxt_cp_ring_info *cpr;
+		struct bnxt_rx_queue *rxq;
+		int i;
+
+		/*
+		 * The first active receive ring is used as the VNIC
+		 * default receive ring. If there are no active receive
+		 * rings (all corresponding receive queues are stopped),
+		 * the first receive ring is used.
+		 */
+		for (i = vnic->start_grp_id; i < vnic->end_grp_id; i++) {
+			rxq = bp->eth_dev->data->rx_queues[i];
+			if (rxq->rx_started) {
+				dflt_rxq = i;
+				break;
+			}
+		}
+
+		rxq = bp->eth_dev->data->rx_queues[dflt_rxq];
+		rxr = rxq->rx_ring;
+		cpr = rxq->cp_ring;
 
 		req.default_rx_ring_id =
 			rte_cpu_to_le_16(rxr->rx_ring_struct->fw_ring_id);
@@ -2160,10 +2183,6 @@ int bnxt_hwrm_func_clr_stats(struct bnxt *bp, uint16_t fid)
 	return rc;
 }
 
-/*
- * HWRM utility functions
- */
-
 int bnxt_clear_all_hwrm_stat_ctxs(struct bnxt *bp)
 {
 	unsigned int i;
@@ -2382,6 +2401,10 @@ int bnxt_alloc_all_hwrm_ring_grps(struct bnxt *bp)
 	return rc;
 }
 
+/*
+ * HWRM utility functions
+ */
+
 void bnxt_free_hwrm_resources(struct bnxt *bp)
 {
 	/* Release memzone */
@@ -2431,8 +2454,6 @@ int bnxt_clear_hwrm_vnic_filters(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 			rc = bnxt_hwrm_clear_l2_filter(bp, filter);
 		STAILQ_REMOVE(&vnic->filter, filter, bnxt_filter_info, next);
 		bnxt_free_filter(bp, filter);
-		//if (rc)
-			//break;
 	}
 	return rc;
 }
@@ -2457,8 +2478,6 @@ bnxt_clear_hwrm_vnic_flows(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 
 		STAILQ_REMOVE(&vnic->flow_list, flow, rte_flow, next);
 		rte_free(flow);
-		//if (rc)
-			//break;
 	}
 	return rc;
 }
@@ -2469,18 +2488,15 @@ int bnxt_set_hwrm_vnic_filters(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 	int rc = 0;
 
 	STAILQ_FOREACH(filter, &vnic->filter, next) {
-		if (filter->filter_type == HWRM_CFA_EM_FILTER) {
+		if (filter->filter_type == HWRM_CFA_EM_FILTER)
 			rc = bnxt_hwrm_set_em_filter(bp, filter->dst_id,
 						     filter);
-		} else if (filter->filter_type == HWRM_CFA_NTUPLE_FILTER) {
+		else if (filter->filter_type == HWRM_CFA_NTUPLE_FILTER)
 			rc = bnxt_hwrm_set_ntuple_filter(bp, filter->dst_id,
 							 filter);
-		} else {
+		else
 			rc = bnxt_hwrm_set_l2_filter(bp, vnic->fw_vnic_id,
 						     filter);
-			if (!rc)
-				filter->dflt = 1;
-		}
 		if (rc)
 			break;
 	}
@@ -2513,7 +2529,6 @@ void bnxt_free_all_hwrm_resources(struct bnxt *bp)
 	for (i = bp->max_vnics - 1; i >= 0; i--) {
 		struct bnxt_vnic_info *vnic = &bp->vnic_info[i];
 
-		// If the VNIC ID is invalid we are not currently using the VNIC
 		if (vnic->fw_vnic_id == INVALID_HW_RING_ID)
 			continue;
 
@@ -2874,17 +2889,20 @@ int bnxt_hwrm_func_qcfg(struct bnxt *bp, uint16_t *mtu)
 	if (BNXT_PF(bp) && (flags & HWRM_FUNC_QCFG_OUTPUT_FLAGS_MULTI_HOST))
 		bp->flags |= BNXT_FLAG_MULTI_HOST;
 
-	if (BNXT_VF(bp) && (flags & HWRM_FUNC_QCFG_OUTPUT_FLAGS_TRUSTED_VF)) {
+	if (BNXT_VF(bp) &&
+	    !BNXT_VF_IS_TRUSTED(bp) &&
+	    (flags & HWRM_FUNC_QCFG_OUTPUT_FLAGS_TRUSTED_VF)) {
 		bp->flags |= BNXT_FLAG_TRUSTED_VF_EN;
 		PMD_DRV_LOG(INFO, "Trusted VF cap enabled\n");
 	} else if (BNXT_VF(bp) &&
+		   BNXT_VF_IS_TRUSTED(bp) &&
 		   !(flags & HWRM_FUNC_QCFG_OUTPUT_FLAGS_TRUSTED_VF)) {
 		bp->flags &= ~BNXT_FLAG_TRUSTED_VF_EN;
 		PMD_DRV_LOG(INFO, "Trusted VF cap disabled\n");
 	}
 
 	if (mtu)
-		*mtu = resp->mtu;
+		*mtu = rte_le_to_cpu_16(resp->mtu);
 
 	switch (resp->port_partition_type) {
 	case HWRM_FUNC_QCFG_OUTPUT_PORT_PARTITION_TYPE_NPAR1_0:
@@ -2955,10 +2973,9 @@ static int bnxt_hwrm_pf_func_cfg(struct bnxt *bp, int tx_rings)
 	}
 
 	req.flags = rte_cpu_to_le_32(bp->pf.func_cfg_flags);
-	req.mtu = rte_cpu_to_le_16(BNXT_MAX_MTU);
-	req.mru = rte_cpu_to_le_16(bp->eth_dev->data->mtu + RTE_ETHER_HDR_LEN +
-				   RTE_ETHER_CRC_LEN + VLAN_TAG_SIZE *
-				   BNXT_NUM_VLANS);
+	req.mtu = rte_cpu_to_le_16(RTE_MIN(bp->eth_dev->data->mtu,
+					   BNXT_MAX_MTU)); //FW adds hdr sizes
+	req.mru = rte_cpu_to_le_16(BNXT_VNIC_MRU(bp->eth_dev->data->mtu));
 	req.num_rsscos_ctxs = rte_cpu_to_le_16(bp->max_rsscos_ctx);
 	req.num_stat_ctxs = rte_cpu_to_le_16(bp->max_stat_ctx);
 	req.num_cmpl_rings = rte_cpu_to_le_16(bp->max_cp_rings);
@@ -2997,9 +3014,7 @@ static void populate_vf_func_cfg_req(struct bnxt *bp,
 	req->mtu = rte_cpu_to_le_16(bp->eth_dev->data->mtu + RTE_ETHER_HDR_LEN +
 				    RTE_ETHER_CRC_LEN + VLAN_TAG_SIZE *
 				    BNXT_NUM_VLANS);
-	req->mru = rte_cpu_to_le_16(bp->eth_dev->data->mtu + RTE_ETHER_HDR_LEN +
-				    RTE_ETHER_CRC_LEN + VLAN_TAG_SIZE *
-				    BNXT_NUM_VLANS);
+	req->mru = rte_cpu_to_le_16(BNXT_VNIC_MRU(bp->eth_dev->data->mtu));
 	req->num_rsscos_ctxs = rte_cpu_to_le_16(bp->max_rsscos_ctx /
 						(num_vfs + 1));
 	req->num_stat_ctxs = rte_cpu_to_le_16(bp->max_stat_ctx / (num_vfs + 1));
@@ -3626,7 +3641,6 @@ int bnxt_hwrm_ctx_qstats(struct bnxt *bp, uint32_t cid, int idx,
 		stats->q_obytes[idx] += rte_le_to_cpu_64(resp->tx_bcast_bytes);
 	}
 
-
 	HWRM_UNLOCK();
 
 	return rc;
@@ -4211,7 +4225,6 @@ int bnxt_hwrm_set_ntuple_filter(struct bnxt *bp,
 	      HWRM_CFA_NTUPLE_FILTER_ALLOC_INPUT_ENABLES_DST_ID;
 	req.dst_id = rte_cpu_to_le_16(dst_id);
 
-
 	if (filter->ip_addr_type) {
 		req.ip_addr_type = filter->ip_addr_type;
 		enables |=
@@ -4224,10 +4237,6 @@ int bnxt_hwrm_set_ntuple_filter(struct bnxt *bp,
 	    HWRM_CFA_NTUPLE_FILTER_ALLOC_INPUT_ENABLES_SRC_MACADDR)
 		memcpy(req.src_macaddr, filter->src_macaddr,
 		       RTE_ETHER_ADDR_LEN);
-	//if (enables &
-	    //HWRM_CFA_NTUPLE_FILTER_ALLOC_INPUT_ENABLES_DST_MACADDR)
-		//memcpy(req.dst_macaddr, filter->dst_macaddr,
-		       //RTE_ETHER_ADDR_LEN);
 	if (enables &
 	    HWRM_CFA_NTUPLE_FILTER_ALLOC_INPUT_ENABLES_ETHERTYPE)
 		req.ethertype = rte_cpu_to_be_16(filter->ethertype);
@@ -4347,8 +4356,10 @@ bnxt_vnic_rss_configure_thor(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 			}
 
 			/* Return if no rings are active. */
-			if (cnt == max_rings)
+			if (cnt == max_rings) {
+				HWRM_UNLOCK();
 				return 0;
+			}
 
 			/* Add rx/cp ring pair to RSS table. */
 			rxr = rxqs[k]->rx_ring;
@@ -4850,6 +4861,9 @@ int bnxt_hwrm_if_change(struct bnxt *bp, bool up)
 	HWRM_CHECK_RESULT();
 	flags = rte_le_to_cpu_32(resp->flags);
 	HWRM_UNLOCK();
+
+	if (!up)
+		return 0;
 
 	if (flags & HWRM_FUNC_DRV_IF_CHANGE_OUTPUT_FLAGS_HOT_FW_RESET_DONE) {
 		PMD_DRV_LOG(INFO, "FW reset happened while port was down\n");

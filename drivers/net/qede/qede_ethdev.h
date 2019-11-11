@@ -42,20 +42,27 @@
 #define qede_stringify(x...)		qede_stringify1(x)
 
 /* Driver versions */
+#define QEDE_PMD_DRV_VER_STR_SIZE NAME_SIZE /* 128 */
 #define QEDE_PMD_VER_PREFIX		"QEDE PMD"
 #define QEDE_PMD_VERSION_MAJOR		2
-#define QEDE_PMD_VERSION_MINOR	        10
-#define QEDE_PMD_VERSION_REVISION       0
+#define QEDE_PMD_VERSION_MINOR	        11
+#define QEDE_PMD_VERSION_REVISION       3
 #define QEDE_PMD_VERSION_PATCH	        1
 
-#define QEDE_PMD_VERSION qede_stringify(QEDE_PMD_VERSION_MAJOR) "."     \
-			 qede_stringify(QEDE_PMD_VERSION_MINOR) "."     \
-			 qede_stringify(QEDE_PMD_VERSION_REVISION) "."  \
-			 qede_stringify(QEDE_PMD_VERSION_PATCH)
+#define QEDE_PMD_DRV_VERSION qede_stringify(QEDE_PMD_VERSION_MAJOR) "."     \
+			     qede_stringify(QEDE_PMD_VERSION_MINOR) "."     \
+			     qede_stringify(QEDE_PMD_VERSION_REVISION) "."  \
+			     qede_stringify(QEDE_PMD_VERSION_PATCH)
 
-#define QEDE_PMD_DRV_VER_STR_SIZE NAME_SIZE
-#define QEDE_PMD_VER_PREFIX "QEDE PMD"
+#define QEDE_PMD_BASE_VERSION qede_stringify(ECORE_MAJOR_VERSION) "."       \
+			      qede_stringify(ECORE_MINOR_VERSION) "."       \
+			      qede_stringify(ECORE_REVISION_VERSION) "."    \
+			      qede_stringify(ECORE_ENGINEERING_VERSION)
 
+#define QEDE_PMD_FW_VERSION qede_stringify(FW_MAJOR_VERSION) "."            \
+			    qede_stringify(FW_MINOR_VERSION) "."            \
+			    qede_stringify(FW_REVISION_VERSION) "."         \
+			    qede_stringify(FW_ENGINEERING_VERSION)
 
 #define QEDE_RSS_INDIR_INITED     (1 << 0)
 #define QEDE_RSS_KEY_INITED       (1 << 1)
@@ -218,6 +225,7 @@ struct qede_dev {
 	struct qede_fastpath *fp_array;
 	struct qede_fastpath_cmt *fp_array_cmt;
 	uint16_t mtu;
+	uint16_t new_mtu;
 	bool enable_tx_switching;
 	bool rss_enable;
 	struct rte_eth_rss_conf rss_conf;

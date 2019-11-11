@@ -21,8 +21,8 @@
 #include <rte_string_fns.h>
 
 #include "rte_eth_bond.h"
-#include "rte_eth_bond_private.h"
-#include "rte_eth_bond_8023ad_private.h"
+#include "eth_bond_private.h"
+#include "eth_bond_8023ad_private.h"
 
 #define REORDER_PERIOD_MS 10
 #define DEFAULT_POLLING_INTERVAL_10_MS (10)
@@ -2439,7 +2439,8 @@ bond_ethdev_link_update(struct rte_eth_dev *ethdev, int wait_to_complete)
 				bond_ctx->mode4.slave_link.link_autoneg;
 		ethdev->data->dev_link.link_duplex =
 				bond_ctx->mode4.slave_link.link_duplex;
-		/* fall through to update link speed */
+		/* fall through */
+		/* to update link speed */
 	case BONDING_MODE_ROUND_ROBIN:
 	case BONDING_MODE_BALANCE:
 	case BONDING_MODE_TLB:

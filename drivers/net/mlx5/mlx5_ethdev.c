@@ -383,9 +383,6 @@ mlx5_dev_configure(struct rte_eth_dev *dev)
 	struct mlx5_priv *priv = dev->data->dev_private;
 	unsigned int rxqs_n = dev->data->nb_rx_queues;
 	unsigned int txqs_n = dev->data->nb_tx_queues;
-	unsigned int i;
-	unsigned int j;
-	unsigned int reta_idx_n;
 	const uint8_t use_app_rss_key =
 		!!dev->data->dev_conf.rx_adv_conf.rss_conf.rss_key;
 	int ret = 0;
@@ -431,32 +428,89 @@ mlx5_dev_configure(struct rte_eth_dev *dev)
 		DRV_LOG(INFO, "port %u Rx queues number update: %u -> %u",
 			dev->data->port_id, priv->rxqs_n, rxqs_n);
 		priv->rxqs_n = rxqs_n;
-		/*
-		 * If the requested number of RX queues is not a power of two,
-		 * use the maximum indirection table size for better balancing.
-		 * The result is always rounded to the next power of two.
-		 */
-		reta_idx_n = (1 << log2above((rxqs_n & (rxqs_n - 1)) ?
-					     priv->config.ind_table_max_size :
-					     rxqs_n));
-		ret = mlx5_rss_reta_index_resize(dev, reta_idx_n);
-		if (ret)
-			return ret;
-		/*
-		 * When the number of RX queues is not a power of two,
-		 * the remaining table entries are padded with reused WQs
-		 * and hashes are not spread uniformly.
-		 */
-		for (i = 0, j = 0; (i != reta_idx_n); ++i) {
-			(*priv->reta_idx)[i] = j;
-			if (++j == rxqs_n)
-				j = 0;
-		}
 	}
+	priv->skip_default_rss_reta = 0;
 	ret = mlx5_proc_priv_init(dev);
 	if (ret)
 		return ret;
 	return 0;
+}
+
+/**
+ * Configure default RSS reta.
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+int
+mlx5_dev_configure_rss_reta(struct rte_eth_dev *dev)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	unsigned int rxqs_n = dev->data->nb_rx_queues;
+	unsigned int i;
+	unsigned int j;
+	unsigned int reta_idx_n;
+	int ret = 0;
+	unsigned int *rss_queue_arr = NULL;
+	unsigned int rss_queue_n = 0;
+
+	if (priv->skip_default_rss_reta)
+		return ret;
+	rss_queue_arr = rte_malloc("", rxqs_n * sizeof(unsigned int), 0);
+	if (!rss_queue_arr) {
+		DRV_LOG(ERR, "port %u cannot allocate RSS queue list (%u)",
+			dev->data->port_id, rxqs_n);
+		rte_errno = ENOMEM;
+		return -rte_errno;
+	}
+	for (i = 0, j = 0; i < rxqs_n; i++) {
+		struct mlx5_rxq_data *rxq_data;
+		struct mlx5_rxq_ctrl *rxq_ctrl;
+
+		rxq_data = (*priv->rxqs)[i];
+		rxq_ctrl = container_of(rxq_data, struct mlx5_rxq_ctrl, rxq);
+		if (rxq_ctrl->type == MLX5_RXQ_TYPE_STANDARD)
+			rss_queue_arr[j++] = i;
+	}
+	rss_queue_n = j;
+	if (rss_queue_n > priv->config.ind_table_max_size) {
+		DRV_LOG(ERR, "port %u cannot handle this many Rx queues (%u)",
+			dev->data->port_id, rss_queue_n);
+		rte_errno = EINVAL;
+		rte_free(rss_queue_arr);
+		return -rte_errno;
+	}
+	DRV_LOG(INFO, "port %u Rx queues number update: %u -> %u",
+		dev->data->port_id, priv->rxqs_n, rxqs_n);
+	priv->rxqs_n = rxqs_n;
+	/*
+	 * If the requested number of RX queues is not a power of two,
+	 * use the maximum indirection table size for better balancing.
+	 * The result is always rounded to the next power of two.
+	 */
+	reta_idx_n = (1 << log2above((rss_queue_n & (rss_queue_n - 1)) ?
+				priv->config.ind_table_max_size :
+				rss_queue_n));
+	ret = mlx5_rss_reta_index_resize(dev, reta_idx_n);
+	if (ret) {
+		rte_free(rss_queue_arr);
+		return ret;
+	}
+	/*
+	 * When the number of RX queues is not a power of two,
+	 * the remaining table entries are padded with reused WQs
+	 * and hashes are not spread uniformly.
+	 */
+	for (i = 0, j = 0; (i != reta_idx_n); ++i) {
+		(*priv->reta_idx)[i] = rss_queue_arr[j];
+		if (++j == rss_queue_n)
+			j = 0;
+	}
+	rte_free(rss_queue_arr);
+	return ret;
 }
 
 /**
@@ -999,6 +1053,7 @@ mlx5_link_update(struct rte_eth_dev *dev, int wait_to_complete)
 	int ret;
 	struct rte_eth_link dev_link;
 	time_t start_time = time(NULL);
+	int retry = MLX5_GET_LINK_STATUS_RETRY_COUNT;
 
 	do {
 		ret = mlx5_link_update_unlocked_gs(dev, &dev_link);
@@ -1007,7 +1062,7 @@ mlx5_link_update(struct rte_eth_dev *dev, int wait_to_complete)
 		if (ret == 0)
 			break;
 		/* Handle wait to complete situation. */
-		if (wait_to_complete && ret == -EAGAIN) {
+		if ((wait_to_complete || retry) && ret == -EAGAIN) {
 			if (abs((int)difftime(time(NULL), start_time)) <
 			    MLX5_LINK_STATUS_TIMEOUT) {
 				usleep(0);
@@ -1019,7 +1074,7 @@ mlx5_link_update(struct rte_eth_dev *dev, int wait_to_complete)
 		} else if (ret < 0) {
 			return ret;
 		}
-	} while (wait_to_complete);
+	} while (wait_to_complete || retry-- > 0);
 	ret = !!memcmp(&dev->data->dev_link, &dev_link,
 		       sizeof(struct rte_eth_link));
 	dev->data->dev_link = dev_link;
@@ -1447,6 +1502,37 @@ mlx5_dev_shared_handler_uninstall(struct rte_eth_dev *dev)
 				     mlx5_dev_interrupt_handler, sh);
 	sh->intr_handle.fd = 0;
 	sh->intr_handle.type = RTE_INTR_HANDLE_UNKNOWN;
+exit:
+	pthread_mutex_unlock(&sh->intr_mutex);
+}
+
+/**
+ * Uninstall devx shared asynchronous device events handler.
+ * This function is implemeted to support event sharing
+ * between multiple ports of single IB device.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ */
+static void
+mlx5_dev_shared_handler_devx_uninstall(struct rte_eth_dev *dev)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_ibv_shared *sh = priv->sh;
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
+	pthread_mutex_lock(&sh->intr_mutex);
+	assert(priv->ibv_port);
+	assert(priv->ibv_port <= sh->max_port);
+	assert(dev->data->port_id < RTE_MAX_ETHPORTS);
+	if (sh->port[priv->ibv_port - 1].devx_ih_port_id >= RTE_MAX_ETHPORTS)
+		goto exit;
+	assert(sh->port[priv->ibv_port - 1].devx_ih_port_id ==
+					(uint32_t)dev->data->port_id);
+	sh->port[priv->ibv_port - 1].devx_ih_port_id = RTE_MAX_ETHPORTS;
+	if (!sh->devx_intr_cnt || --sh->devx_intr_cnt)
+		goto exit;
 	if (sh->intr_handle_devx.fd) {
 		rte_intr_callback_unregister(&sh->intr_handle_devx,
 					     mlx5_dev_interrupt_handler_devx,
@@ -1489,8 +1575,9 @@ mlx5_dev_shared_handler_install(struct rte_eth_dev *dev)
 		assert(sh->intr_cnt);
 		goto exit;
 	}
-	sh->port[priv->ibv_port - 1].ih_port_id = (uint32_t)dev->data->port_id;
 	if (sh->intr_cnt) {
+		sh->port[priv->ibv_port - 1].ih_port_id =
+						(uint32_t)dev->data->port_id;
 		sh->intr_cnt++;
 		goto exit;
 	}
@@ -1499,52 +1586,81 @@ mlx5_dev_shared_handler_install(struct rte_eth_dev *dev)
 	flags = fcntl(sh->ctx->async_fd, F_GETFL);
 	ret = fcntl(sh->ctx->async_fd, F_SETFL, flags | O_NONBLOCK);
 	if (ret) {
-		DRV_LOG(INFO, "failed to change file descriptor"
-			      " async event queue");
-		goto error;
+		DRV_LOG(INFO, "failed to change file descriptor async event"
+			" queue");
+		/* Indicate there will be no interrupts. */
+		dev->data->dev_conf.intr_conf.lsc = 0;
+		dev->data->dev_conf.intr_conf.rmv = 0;
+	} else {
+		sh->intr_handle.fd = sh->ctx->async_fd;
+		sh->intr_handle.type = RTE_INTR_HANDLE_EXT;
+		rte_intr_callback_register(&sh->intr_handle,
+					   mlx5_dev_interrupt_handler, sh);
+		sh->intr_cnt++;
+		sh->port[priv->ibv_port - 1].ih_port_id =
+						(uint32_t)dev->data->port_id;
 	}
-	sh->intr_handle.fd = sh->ctx->async_fd;
-	sh->intr_handle.type = RTE_INTR_HANDLE_EXT;
-	rte_intr_callback_register(&sh->intr_handle,
-				   mlx5_dev_interrupt_handler, sh);
+exit:
+	pthread_mutex_unlock(&sh->intr_mutex);
+}
+
+/**
+ * Install devx shared asyncronous device events handler.
+ * This function is implemeted to support event sharing
+ * between multiple ports of single IB device.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ */
+static void
+mlx5_dev_shared_handler_devx_install(struct rte_eth_dev *dev)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_ibv_shared *sh = priv->sh;
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return;
+	pthread_mutex_lock(&sh->intr_mutex);
+	assert(priv->ibv_port);
+	assert(priv->ibv_port <= sh->max_port);
+	assert(dev->data->port_id < RTE_MAX_ETHPORTS);
+	if (sh->port[priv->ibv_port - 1].devx_ih_port_id < RTE_MAX_ETHPORTS) {
+		/* The handler is already installed for this port. */
+		assert(sh->devx_intr_cnt);
+		goto exit;
+	}
+	if (sh->devx_intr_cnt) {
+		sh->devx_intr_cnt++;
+		sh->port[priv->ibv_port - 1].devx_ih_port_id =
+					(uint32_t)dev->data->port_id;
+		goto exit;
+	}
 	if (priv->config.devx) {
 #ifndef HAVE_IBV_DEVX_ASYNC
-		goto error_unregister;
+		goto exit;
 #else
 		sh->devx_comp = mlx5_glue->devx_create_cmd_comp(sh->ctx);
 		if (sh->devx_comp) {
-			flags = fcntl(sh->devx_comp->fd, F_GETFL);
-			ret = fcntl(sh->devx_comp->fd, F_SETFL,
+			int flags = fcntl(sh->devx_comp->fd, F_GETFL);
+			int ret = fcntl(sh->devx_comp->fd, F_SETFL,
 				    flags | O_NONBLOCK);
+
 			if (ret) {
 				DRV_LOG(INFO, "failed to change file descriptor"
-					      " devx async event queue");
-				goto error_unregister;
+					" devx async event queue");
+			} else {
+				sh->intr_handle_devx.fd = sh->devx_comp->fd;
+				sh->intr_handle_devx.type = RTE_INTR_HANDLE_EXT;
+				rte_intr_callback_register
+					(&sh->intr_handle_devx,
+					 mlx5_dev_interrupt_handler_devx, sh);
+				sh->devx_intr_cnt++;
+				sh->port[priv->ibv_port - 1].devx_ih_port_id =
+						(uint32_t)dev->data->port_id;
 			}
-			sh->intr_handle_devx.fd = sh->devx_comp->fd;
-			sh->intr_handle_devx.type = RTE_INTR_HANDLE_EXT;
-			rte_intr_callback_register
-				(&sh->intr_handle_devx,
-				 mlx5_dev_interrupt_handler_devx, sh);
-		} else {
-			DRV_LOG(INFO, "failed to create devx async command "
-				"completion");
-			goto error_unregister;
 		}
 #endif /* HAVE_IBV_DEVX_ASYNC */
 	}
-	sh->intr_cnt++;
-	goto exit;
-error_unregister:
-	rte_intr_callback_unregister(&sh->intr_handle,
-				     mlx5_dev_interrupt_handler, sh);
-error:
-	/* Indicate there will be no interrupts. */
-	dev->data->dev_conf.intr_conf.lsc = 0;
-	dev->data->dev_conf.intr_conf.rmv = 0;
-	sh->intr_handle.fd = 0;
-	sh->intr_handle.type = RTE_INTR_HANDLE_UNKNOWN;
-	sh->port[priv->ibv_port - 1].ih_port_id = RTE_MAX_ETHPORTS;
 exit:
 	pthread_mutex_unlock(&sh->intr_mutex);
 }
@@ -1571,6 +1687,30 @@ void
 mlx5_dev_interrupt_handler_install(struct rte_eth_dev *dev)
 {
 	mlx5_dev_shared_handler_install(dev);
+}
+
+/**
+ * Devx uninstall interrupt handler.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ */
+void
+mlx5_dev_interrupt_handler_devx_uninstall(struct rte_eth_dev *dev)
+{
+	mlx5_dev_shared_handler_devx_uninstall(dev);
+}
+
+/**
+ * Devx install interrupt handler.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ */
+void
+mlx5_dev_interrupt_handler_devx_install(struct rte_eth_dev *dev)
+{
+	mlx5_dev_shared_handler_devx_install(dev);
 }
 
 /**
@@ -2027,4 +2167,31 @@ int mlx5_get_module_eeprom(struct rte_eth_dev *dev,
 		rte_memcpy(info->data, eeprom->data, info->length);
 	rte_free(eeprom);
 	return ret;
+}
+
+/**
+ * DPDK callback to retrieve hairpin capabilities.
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ * @param[out] cap
+ *   Storage for hairpin capability data.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+int mlx5_hairpin_cap_get(struct rte_eth_dev *dev,
+			 struct rte_eth_hairpin_cap *cap)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+
+	if (priv->sh->devx == 0) {
+		rte_errno = ENOTSUP;
+		return -rte_errno;
+	}
+	cap->max_nb_queues = UINT16_MAX;
+	cap->max_rx_2_tx = 1;
+	cap->max_tx_2_rx = 1;
+	cap->max_nb_desc = 8192;
+	return 0;
 }

@@ -248,6 +248,15 @@ selected via CIMC or UCSM followed by a reboot of the server.
   - Selectors: 'is', 'spec' and 'mask'. 'last' is not supported
   - In total, up to 64 bytes of mask is allowed across all headers
 
+- **1400 and later series VICs with Flow Manager API enabled**
+
+  - Attributes: ingress, egress
+  - Items: eth, vlan, ipv4, ipv6, sctp, udp, tcp, vxlan, raw, inner eth, vlan, ipv4, ipv6, sctp, udp, tcp
+  - Ingress Actions: count, drop, flag, jump, mark, port_id, passthru, queue, rss, vxlan_decap, vxlan_encap, and void
+  - Egress Actions: count, drop, jump, passthru, vxlan_encap, and void
+  - Selectors: 'is', 'spec' and 'mask'. 'last' is not supported
+  - In total, up to 64 bytes of mask is allowed across all headers
+
 The VIC performs packet matching after applying VLAN strip. If VLAN
 stripping is enabled, EtherType in the ETH item corresponds to the
 stripped VLAN header's EtherType. Stripping does not affect the VLAN
@@ -309,6 +318,18 @@ By default, the NIC uses 4789 as the VXLAN port. The user may change
 it through ``rte_eth_dev_udp_tunnel_port_{add,delete}``. However, as
 the current NIC has a single VXLAN port number, the user cannot
 configure multiple port numbers.
+
+Geneve headers with non-zero options are not supported by default. To
+use Geneve with options, update the VIC firmware to the latest version
+and then set ``devargs`` parameter ``geneve-opt=1``. When Geneve with
+options is enabled, flow API cannot be used as the features are
+currently mutually exclusive. When this feature is successfully
+enabled, PMD prints the following message.
+
+.. code-block:: console
+
+    Geneve with options is enabled
+
 
 Ingress VLAN Rewrite
 --------------------

@@ -124,6 +124,13 @@ SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_multiwriter.c
 SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_readwrite.c
 SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_readwrite_lf.c
 
+SRCS-$(CONFIG_RTE_LIBRTE_RIB) += test_rib.c
+SRCS-$(CONFIG_RTE_LIBRTE_RIB) += test_rib6.c
+SRCS-$(CONFIG_RTE_LIBRTE_FIB) += test_fib.c
+SRCS-$(CONFIG_RTE_LIBRTE_FIB) += test_fib6.c
+SRCS-$(CONFIG_RTE_LIBRTE_FIB) += test_fib_perf.c
+SRCS-$(CONFIG_RTE_LIBRTE_FIB) += test_fib6_perf.c
+
 SRCS-$(CONFIG_RTE_LIBRTE_LPM) += test_lpm.c
 SRCS-$(CONFIG_RTE_LIBRTE_LPM) += test_lpm_perf.c
 SRCS-$(CONFIG_RTE_LIBRTE_LPM) += test_lpm6.c
@@ -224,6 +231,7 @@ SRCS-$(CONFIG_RTE_LIBRTE_BPF) += test_bpf.c
 SRCS-$(CONFIG_RTE_LIBRTE_RCU) += test_rcu_qsbr.c test_rcu_qsbr_perf.c
 
 SRCS-$(CONFIG_RTE_LIBRTE_IPSEC) += test_ipsec.c
+SRCS-$(CONFIG_RTE_LIBRTE_IPSEC) += test_ipsec_sad.c
 ifeq ($(CONFIG_RTE_LIBRTE_IPSEC),y)
 LDLIBS += -lrte_ipsec
 endif

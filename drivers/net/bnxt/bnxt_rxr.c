@@ -12,7 +12,6 @@
 #include <rte_memory.h>
 
 #include "bnxt.h"
-#include "bnxt_cpr.h"
 #include "bnxt_ring.h"
 #include "bnxt_rxr.h"
 #include "bnxt_rxq.h"
@@ -64,17 +63,21 @@ static inline int bnxt_alloc_ag_data(struct bnxt_rx_queue *rxq,
 	struct bnxt_sw_rx_bd *rx_buf = &rxr->ag_buf_ring[prod];
 	struct rte_mbuf *mbuf;
 
+	if (rxbd == NULL) {
+		PMD_DRV_LOG(ERR, "Jumbo Frame. rxbd is NULL\n");
+		return -EINVAL;
+	}
+
+	if (rx_buf == NULL) {
+		PMD_DRV_LOG(ERR, "Jumbo Frame. rx_buf is NULL\n");
+		return -EINVAL;
+	}
+
 	mbuf = __bnxt_alloc_rx_data(rxq->mb_pool);
 	if (!mbuf) {
 		rte_atomic64_inc(&rxq->rx_mbuf_alloc_fail);
 		return -ENOMEM;
 	}
-
-	if (rxbd == NULL)
-		PMD_DRV_LOG(ERR, "Jumbo Frame. rxbd is NULL\n");
-	if (rx_buf == NULL)
-		PMD_DRV_LOG(ERR, "Jumbo Frame. rx_buf is NULL\n");
-
 
 	rx_buf->mbuf = mbuf;
 	mbuf->data_off = RTE_PKTMBUF_HEADROOM;
@@ -509,15 +512,19 @@ static int bnxt_rx_pkt(struct rte_mbuf **rx_pkt,
 
 	flags2_f = flags2_0xf(rxcmp1);
 	/* IP Checksum */
-	if (unlikely(((IS_IP_NONTUNNEL_PKT(flags2_f)) &&
-		      (RX_CMP_IP_CS_ERROR(rxcmp1))) ||
-		     (IS_IP_TUNNEL_PKT(flags2_f) &&
-		      (RX_CMP_IP_OUTER_CS_ERROR(rxcmp1))))) {
-		mbuf->ol_flags |= PKT_RX_IP_CKSUM_BAD;
+	if (likely(IS_IP_NONTUNNEL_PKT(flags2_f))) {
+		if (unlikely(RX_CMP_IP_CS_ERROR(rxcmp1)))
+			mbuf->ol_flags |= PKT_RX_IP_CKSUM_BAD;
+		else
+			mbuf->ol_flags |= PKT_RX_IP_CKSUM_GOOD;
+	} else if (IS_IP_TUNNEL_PKT(flags2_f)) {
+		if (unlikely(RX_CMP_IP_OUTER_CS_ERROR(rxcmp1) ||
+			     RX_CMP_IP_CS_ERROR(rxcmp1)))
+			mbuf->ol_flags |= PKT_RX_IP_CKSUM_BAD;
+		else
+			mbuf->ol_flags |= PKT_RX_IP_CKSUM_GOOD;
 	} else if (unlikely(RX_CMP_IP_CS_UNKNOWN(rxcmp1))) {
 		mbuf->ol_flags |= PKT_RX_IP_CKSUM_UNKNOWN;
-	} else {
-		mbuf->ol_flags |= PKT_RX_IP_CKSUM_GOOD;
 	}
 
 	/* L4 Checksum */
@@ -636,6 +643,9 @@ uint16_t bnxt_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 			evt =
 			bnxt_event_hwrm_resp_handler(rxq->bp,
 						     (struct cmpl_base *)rxcmp);
+			/* If the async event is Fatal error, return */
+			if (unlikely(is_bnxt_in_error(rxq->bp)))
+				goto done;
 		}
 
 		raw_cons = NEXT_RAW_CMP(raw_cons);

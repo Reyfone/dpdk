@@ -4,12 +4,10 @@ DPDK_2.0 {
 	__rte_panic;
 	eal_parse_sysfs_value;
 	eal_timer_source;
-	lcore_config;
 	per_lcore__lcore_id;
 	per_lcore__rte_errno;
 	rte_calloc;
 	rte_calloc_socket;
-	rte_cpu_check_supported;
 	rte_cpu_get_flag_enabled;
 	rte_cycles_vmware_tsc_map;
 	rte_delay_us;
@@ -19,7 +17,6 @@ DPDK_2.0 {
 	rte_dump_tailq;
 	rte_eal_alarm_cancel;
 	rte_eal_alarm_set;
-	rte_eal_get_configuration;
 	rte_eal_get_lcore_state;
 	rte_eal_get_physmem_size;
 	rte_eal_has_hugepages;
@@ -248,8 +245,6 @@ DPDK_18.08 {
 	rte_vfio_container_dma_unmap;
 	rte_vfio_container_group_bind;
 	rte_vfio_container_group_unbind;
-	rte_vfio_dma_map;
-	rte_vfio_dma_unmap;
 	rte_vfio_get_container_fd;
 	rte_vfio_get_group_fd;
 	rte_vfio_get_group_num;
@@ -311,6 +306,16 @@ DPDK_19.08 {
 	rte_srand;
 
 } DPDK_19.05;
+
+DPDK_19.11 {
+	global:
+
+	rte_get_master_lcore;
+	rte_get_next_lcore;
+	rte_lcore_count;
+	rte_lcore_is_enabled;
+
+} DPDK_19.08;
 
 EXPERIMENTAL {
 	global:
@@ -419,4 +424,7 @@ EXPERIMENTAL {
 	rte_mcfg_timer_lock;
 	rte_mcfg_timer_unlock;
 	rte_rand_max;
+
+	# added in 19.11
+	rte_log_get_stream;
 };

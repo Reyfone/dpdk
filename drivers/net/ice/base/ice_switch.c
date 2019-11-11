@@ -93,7 +93,7 @@ u8 dummy_gre_tcp_packet[] = {
 
 	0x45, 0x00, 0x00, 0x14,	/* ICE_IPV4_IL 56 */
 	0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00,
+	0x00, 0x06, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00,
 
@@ -140,7 +140,7 @@ u8 dummy_gre_udp_packet[] = {
 
 	0x45, 0x00, 0x00, 0x14,	/* ICE_IPV4_IL 56 */
 	0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00,
+	0x00, 0x11, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00,
 
@@ -419,6 +419,7 @@ dummy_udp_gtp_packet[] = {
 static const
 struct ice_dummy_pkt_offsets dummy_pppoe_packet_offsets[] = {
 	{ ICE_MAC_OFOS,		0 },
+	{ ICE_ETYPE_OL,		12 },
 	{ ICE_VLAN_OFOS,	14},
 	{ ICE_PPPOE,		18 },
 	{ ICE_PROTOCOL_LAST,	0 },
@@ -429,20 +430,23 @@ dummy_pppoe_packet[] = {
 	0x00, 0x00, 0x00, 0x00, /* ICE_MAC_OFOS 0 */
 	0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00,
-	0x81, 0x00,
+
+	0x81, 0x00,		/* ICE_ETYPE_OL 12 */
 
 	0x00, 0x00, 0x88, 0x64, /* ICE_VLAN_OFOS 14 */
 
-	0x11, 0x00, 0x00, 0x01, /* ICE_PPPOE 18 */
-	0x00, 0x4e, 0x00, 0x21,
+	0x11, 0x00, 0x00, 0x00, /* ICE_PPPOE 18 */
+	0x00, 0x16,
 
-	0x45, 0x00, 0x00, 0x30, /* PDU */
+	0x00, 0x21,		/* PPP Link Layer 24 */
+
+	0x45, 0x00, 0x00, 0x14, /* ICE_IPV4_IL 26 */
 	0x00, 0x00, 0x00, 0x00,
-	0x00, 0x11, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00,
 
-	0x00, 0x00, /* 2 bytes for 4 byte alignment */
+	0x00, 0x00,		/* 2 bytes for 4 bytes alignment */
 };
 
 /* this is a recipe to profile association bitmap */
@@ -5973,12 +5977,9 @@ ice_adv_add_update_vsi_list(struct ice_hw *hw,
 	u16 vsi_list_id = 0;
 
 	if (cur_fltr->sw_act.fltr_act == ICE_FWD_TO_Q ||
-	    cur_fltr->sw_act.fltr_act == ICE_FWD_TO_QGRP)
+	    cur_fltr->sw_act.fltr_act == ICE_FWD_TO_QGRP ||
+	    cur_fltr->sw_act.fltr_act == ICE_DROP_PACKET)
 		return ICE_ERR_NOT_IMPL;
-
-	if (cur_fltr->sw_act.fltr_act == ICE_DROP_PACKET &&
-	    new_fltr->sw_act.fltr_act == ICE_DROP_PACKET)
-		return ICE_ERR_ALREADY_EXISTS;
 
 	if ((new_fltr->sw_act.fltr_act == ICE_FWD_TO_Q ||
 	     new_fltr->sw_act.fltr_act == ICE_FWD_TO_QGRP) &&
@@ -6213,7 +6214,8 @@ ice_add_adv_rule(struct ice_hw *hw, struct ice_adv_lkup_elem *lkups,
 	if (status)
 		goto err_ice_add_adv_rule;
 
-	if (rinfo->tun_type != ICE_NON_TUN) {
+	if (rinfo->tun_type != ICE_NON_TUN &&
+	    rinfo->tun_type != ICE_SW_TUN_AND_NON_TUN) {
 		status = ice_fill_adv_packet_tun(hw, rinfo->tun_type,
 						 s_rule->pdata.lkup_tx_rx.hdr,
 						 pkt_offsets);

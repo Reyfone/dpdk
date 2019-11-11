@@ -1129,6 +1129,8 @@ pmd_init_internals(struct rte_vdev_device *vdev,
 	data->nb_tx_queues = (uint16_t)nb_tx_queues;
 	data->dev_link = pmd_link;
 	data->mac_addrs = &(*internals)->eth_addr;
+	data->promiscuous = 1;
+	data->all_multicast = 1;
 
 	/*
 	 * NOTE: we'll replace the data element, of originally allocated
@@ -1237,12 +1239,6 @@ eth_from_pcaps_common(struct rte_vdev_device *vdev,
 	const unsigned int nb_rx_queues = rx_queues->num_of_queue;
 	const unsigned int nb_tx_queues = tx_queues->num_of_queue;
 	unsigned int i;
-
-	/* do some parameter checking */
-	if (rx_queues == NULL && nb_rx_queues > 0)
-		return -1;
-	if (tx_queues == NULL && nb_tx_queues > 0)
-		return -1;
 
 	if (pmd_init_internals(vdev, nb_rx_queues, nb_tx_queues, internals,
 			eth_dev) < 0)

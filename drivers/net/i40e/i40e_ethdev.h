@@ -1185,6 +1185,7 @@ const struct rte_memzone *i40e_memzone_reserve(const char *name,
 					uint32_t len,
 					int socket_id);
 int i40e_fdir_configure(struct rte_eth_dev *dev);
+void i40e_fdir_rx_proc_enable(struct rte_eth_dev *dev, bool on);
 void i40e_fdir_teardown(struct i40e_pf *pf);
 enum i40e_filter_pctype
 	i40e_flowtype_to_pctype(const struct i40e_adapter *adapter,
@@ -1209,6 +1210,10 @@ void i40e_rxq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 	struct rte_eth_rxq_info *qinfo);
 void i40e_txq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 	struct rte_eth_txq_info *qinfo);
+int i40e_rx_burst_mode_get(struct rte_eth_dev *dev, uint16_t queue_id,
+			   struct rte_eth_burst_mode *mode);
+int i40e_tx_burst_mode_get(struct rte_eth_dev *dev, uint16_t queue_id,
+			   struct rte_eth_burst_mode *mode);
 struct i40e_ethertype_filter *
 i40e_sw_ethertype_filter_lookup(struct i40e_ethertype_rule *ethertype_rule,
 			const struct i40e_ethertype_filter_input *input);

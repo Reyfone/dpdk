@@ -658,6 +658,60 @@ the physical device, with virtual groups in the PMD or not at all.
    | ``mask`` | ``id``   | zeroed to match any value |
    +----------+----------+---------------------------+
 
+Item: ``TAG``
+^^^^^^^^^^^^^
+
+Matches tag item set by other flows. Multiple tags are supported by specifying
+``index``.
+
+- Default ``mask`` matches the specified tag value and index.
+
+.. _table_rte_flow_item_tag:
+
+.. table:: TAG
+
+   +----------+----------+----------------------------------------+
+   | Field    | Subfield  | Value                                 |
+   +==========+===========+=======================================+
+   | ``spec`` | ``data``  | 32 bit flow tag value                 |
+   |          +-----------+---------------------------------------+
+   |          | ``index`` | index of flow tag                     |
+   +----------+-----------+---------------------------------------+
+   | ``last`` | ``data``  | upper range value                     |
+   |          +-----------+---------------------------------------+
+   |          | ``index`` | field is ignored                      |
+   +----------+-----------+---------------------------------------+
+   | ``mask`` | ``data``  | bit-mask applies to "spec" and "last" |
+   |          +-----------+---------------------------------------+
+   |          | ``index`` | field is ignored                      |
+   +----------+-----------+---------------------------------------+
+
+Item: ``META``
+^^^^^^^^^^^^^^^^^
+
+Matches 32 bit metadata item set.
+
+On egress, metadata can be set either by mbuf metadata field with
+PKT_TX_DYNF_METADATA flag or ``SET_META`` action. On ingress, ``SET_META``
+action sets metadata for a packet and the metadata will be reported via
+``metadata`` dynamic field of ``rte_mbuf`` with PKT_RX_DYNF_METADATA flag.
+
+- Default ``mask`` matches the specified Rx metadata value.
+
+.. _table_rte_flow_item_meta:
+
+.. table:: META
+
+   +----------+----------+---------------------------------------+
+   | Field    | Subfield | Value                                 |
+   +==========+==========+=======================================+
+   | ``spec`` | ``data`` | 32 bit metadata value                 |
+   +----------+----------+---------------------------------------+
+   | ``last`` | ``data`` | upper range value                     |
+   +----------+----------+---------------------------------------+
+   | ``mask`` | ``data`` | bit-mask applies to "spec" and "last" |
+   +----------+----------+---------------------------------------+
+
 Data matching item types
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -1232,20 +1286,56 @@ Matches a PPPoE session protocol identifier.
 - ``proto_id``: PPP protocol identifier.
 - Default ``mask`` matches proto_id only.
 
+Item: ``NSH``
+^^^^^^^^^^^^^
 
-.. _table_rte_flow_item_meta:
+Matches a network service header (RFC 8300).
 
-.. table:: META
+- ``version``: normally 0x0 (2 bits).
+- ``oam_pkt``: indicate oam packet (1 bit).
+- ``reserved``: reserved bit (1 bit).
+- ``ttl``: maximum SFF hopes (6 bits).
+- ``length``: total length in 4 bytes words (6 bits).
+- ``reserved1``: reserved1 bits (4 bits).
+- ``mdtype``: ndicates format of NSH header (4 bits).
+- ``next_proto``: indicates protocol type of encap data (8 bits).
+- ``spi``: service path identifier (3 bytes).
+- ``sindex``: service index (1 byte).
+- Default ``mask`` matches mdtype, next_proto, spi, sindex.
 
-   +----------+----------+---------------------------------------+
-   | Field    | Subfield | Value                                 |
-   +==========+==========+=======================================+
-   | ``spec`` | ``data`` | 32 bit metadata value                 |
-   +----------+--------------------------------------------------+
-   | ``last`` | ``data`` | upper range value                     |
-   +----------+----------+---------------------------------------+
-   | ``mask`` | ``data`` | bit-mask applies to "spec" and "last" |
-   +----------+----------+---------------------------------------+
+
+Item: ``IGMP``
+^^^^^^^^^^^^^^
+
+Matches a Internet Group Management Protocol (RFC 2236).
+
+- ``type``: IGMP message type (Query/Report).
+- ``max_resp_time``: max time allowed before sending report.
+- ``checksum``: checksum, 1s complement of whole IGMP message.
+- ``group_addr``: group address, for Query value will be 0.
+- Default ``mask`` matches group_addr.
+
+
+Item: ``AH``
+^^^^^^^^^^^^
+
+Matches a IP Authentication Header (RFC 4302).
+
+- ``next_hdr``: next payload after AH.
+- ``payload_len``: total length of AH in 4B words.
+- ``reserved``: reserved bits.
+- ``spi``: security parameters index.
+- ``seq_num``: counter value increased by 1 on each packet sent.
+- Default ``mask`` matches spi.
+
+Item: ``HIGIG2``
+^^^^^^^^^^^^^^^^^
+
+Matches a HIGIG2 header field. It is layer 2.5 protocol and used in
+Broadcom switches.
+
+- Default ``mask`` matches classification and vlan.
+
 
 Actions
 ~~~~~~~
@@ -2414,6 +2504,59 @@ Decrease acknowledgment number in the outermost TCP header.
 Value to decrease TCP acknowledgment number by is a big-endian 32 bit integer.
 
 Using this action on non-matching traffic will result in undefined behavior.
+
+Action: ``SET_TAG``
+^^^^^^^^^^^^^^^^^^^
+
+Set Tag.
+
+Tag is a transient data used during flow matching. This is not delivered to
+application. Multiple tags are supported by specifying index.
+
+.. _table_rte_flow_action_set_tag:
+
+.. table:: SET_TAG
+
+   +-----------+----------------------------+
+   | Field     | Value                      |
+   +===========+============================+
+   | ``data``  | 32 bit tag value           |
+   +-----------+----------------------------+
+   | ``mask``  | bit-mask applies to "data" |
+   +-----------+----------------------------+
+   | ``index`` | index of tag to set        |
+   +-----------+----------------------------+
+
+Action: ``SET_META``
+^^^^^^^^^^^^^^^^^^^^^^^
+
+Set metadata. Item ``META`` matches metadata.
+
+Metadata set by mbuf metadata field with PKT_TX_DYNF_METADATA flag on egress
+will be overridden by this action. On ingress, the metadata will be carried by
+``metadata`` dynamic field of ``rte_mbuf`` which can be accessed by
+``RTE_FLOW_DYNF_METADATA()``. PKT_RX_DYNF_METADATA flag will be set along
+with the data.
+
+The mbuf dynamic field must be registered by calling
+``rte_flow_dynf_metadata_register()`` prior to use ``SET_META`` action.
+
+Altering partial bits is supported with ``mask``. For bits which have never been
+set, unpredictable value will be seen depending on driver implementation. For
+loopback/hairpin packet, metadata set on Rx/Tx may or may not be propagated to
+the other path depending on HW capability.
+
+.. _table_rte_flow_action_set_meta:
+
+.. table:: SET_META
+
+   +----------+----------------------------+
+   | Field    | Value                      |
+   +==========+============================+
+   | ``data`` | 32 bit metadata value      |
+   +----------+----------------------------+
+   | ``mask`` | bit-mask applies to "data" |
+   +----------+----------------------------+
 
 Negative types
 ~~~~~~~~~~~~~~

@@ -198,9 +198,7 @@ For example:
    Maximum number of MAC addresses: 64
    Maximum number of MAC addresses of hash filtering: 0
    VLAN offload:
-       strip on
-       filter on
-       qinq(extend) off
+       strip on, filter on, extend off, qinq strip off
    Redirection table size: 512
    Supported flow types:
      ipv4-frag
@@ -253,6 +251,14 @@ show (rxq|txq)
 Display information for a given port's RX/TX queue::
 
    testpmd> show (rxq|txq) info (port_id) (queue_id)
+
+show desc status(rxq|txq)
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Display information for a given port's RX/TX descriptor status::
+
+   testpmd> show port (port_id) (rxq|txq) (queue_id) desc (desc_id) status
+
 
 show config
 ~~~~~~~~~~~
@@ -467,6 +473,13 @@ Show Tx metadata value set for a specific port::
 
    testpmd> show port (port_id) tx_metadata
 
+show port supported ptypes
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Show ptypes supported for a specific port::
+
+   testpmd> show port (port_id) ptypes
+
 show device info
 ~~~~~~~~~~~~~~~~
 
@@ -539,6 +552,25 @@ dump log types
 Dumps the log level for all the dpdk modules::
 
    testpmd> dump_log_types
+
+show (raw_encap|raw_decap)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Display content of raw_encap/raw_decap buffers in hex::
+
+  testpmd> show <raw_encap|raw_decap> <index>
+  testpmd> show <raw_encap|raw_decap> all
+
+For example::
+
+  testpmd> show raw_encap 6
+
+  index: 6 at [0x1c565b0], len=50
+  00000000: 00 00 00 00 00 00 16 26 36 46 56 66 08 00 45 00 | .......&6FVf..E.
+  00000010: 00 00 00 00 00 00 00 11 00 00 C0 A8 01 06 C0 A8 | ................
+  00000020: 03 06 00 00 00 FA 00 00 00 00 08 00 00 00 00 00 | ................
+  00000030: 06 00                                           | ..
+
 
 Configuration Functions
 -----------------------
@@ -799,13 +831,6 @@ Set broadcast mode for a VF from the PF::
 
    testpmd> set vf broadcast (port_id) (vf_id) (on|off)
 
-vlan set strip
-~~~~~~~~~~~~~~
-
-Set the VLAN strip on a port::
-
-   testpmd> vlan set strip (on|off) (port_id)
-
 vlan set stripq
 ~~~~~~~~~~~~~~~
 
@@ -841,19 +866,11 @@ Set VLAN antispoof for a VF from the PF::
 
    testpmd> set vf vlan antispoof (port_id) (vf_id) (on|off)
 
-vlan set filter
-~~~~~~~~~~~~~~~
+vlan set (strip|filter|qinq_strip|extend)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Set the VLAN strip/filter/QinQ strip/extend on for a port::
 
-Set the VLAN filter on a port::
-
-   testpmd> vlan set filter (on|off) (port_id)
-
-vlan set qinq
-~~~~~~~~~~~~~
-
-Set the VLAN QinQ (extended queue in queue) on for a port::
-
-   testpmd> vlan set qinq (on|off) (port_id)
+   testpmd> vlan set (strip|filter|qinq_strip|extend) (on|off) (port_id)
 
 vlan set tpid
 ~~~~~~~~~~~~~
@@ -1663,7 +1680,7 @@ Enable or disable a per port Rx offloading on all Rx queues of a port::
                   vlan_strip, ipv4_cksum, udp_cksum, tcp_cksum, tcp_lro,
                   qinq_strip, outer_ipv4_cksum, macsec_strip,
                   header_split, vlan_filter, vlan_extend, jumbo_frame,
-                  crc_strip, scatter, timestamp, security, keep_crc
+                  scatter, timestamp, security, keep_crc
 
 This command should be run when the port is stopped, or else it will fail.
 
@@ -1678,7 +1695,7 @@ Enable or disable a per queue Rx offloading only on a specific Rx queue::
                   vlan_strip, ipv4_cksum, udp_cksum, tcp_cksum, tcp_lro,
                   qinq_strip, outer_ipv4_cksum, macsec_strip,
                   header_split, vlan_filter, vlan_extend, jumbo_frame,
-                  crc_strip, scatter, timestamp, security, keep_crc
+                  scatter, timestamp, security, keep_crc
 
 This command should be run when the port is stopped, or else it will fail.
 
@@ -1844,12 +1861,22 @@ Config Raw Encapsulation
 Configure the raw data to be used when encapsulating a packet by
 rte_flow_action_raw_encap::
 
+ set raw_encap {index} {item} [/ {item} [...]] / end_set
+
+There are multiple global buffers for ``raw_encap``, this command will set one
+internal buffer index by ``{index}``.
+If there is no ``{index}`` specified::
+
  set raw_encap {item} [/ {item} [...]] / end_set
 
-This command will set an internal buffer inside testpmd, any following flow rule
-using the action raw_encap will use the last configuration set.
-To have a different encapsulation header, this command must be called before the
-flow rule creation.
+the default index ``0`` is used.
+In order to use different encapsulating header, ``index`` must be specified
+during the flow rule creation::
+
+ testpmd> flow create 0 egress pattern eth / ipv4 / end actions
+        raw_encap index 2 / end
+
+Otherwise the default index ``0`` is used.
 
 Config Raw Decapsulation
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1857,10 +1884,22 @@ Config Raw Decapsulation
 Configure the raw data to be used when decapsulating a packet by
 rte_flow_action_raw_decap::
 
+ set raw_decap {index} {item} [/ {item} [...]] / end_set
+
+There are multiple global buffers for ``raw_decap``, this command will set
+one internal buffer index by ``{index}``.
+If there is no ``{index}`` specified::
+
  set raw_decap {item} [/ {item} [...]] / end_set
 
-This command will set an internal buffer inside testpmd, any following flow rule
-using the action raw_decap will use the last configuration set.
+the default index ``0`` is used.
+In order to use different decapsulating header, ``index`` must be specified
+during the flow rule creation::
+
+ testpmd> flow create 0 egress pattern eth / ipv4 / end actions
+          raw_encap index 3 / end
+
+Otherwise the default index ``0`` is used.
 
 Port Functions
 --------------
@@ -4381,7 +4420,7 @@ Sample QinQ flow rules
 Before creating QinQ rule(s) the following commands should be issued to enable QinQ::
 
    testpmd> port stop 0
-   testpmd> vlan set qinq on 0
+   testpmd> vlan set qinq_strip on 0
 
 The above command sets the inner and outer TPID's to 0x8100.
 
@@ -4680,11 +4719,11 @@ Raw encapsulation configuration can be set by the following commands
 
 Eecapsulating VxLAN::
 
- testpmd> set raw_encap eth src is 10:11:22:33:44:55 / vlan tci is 1
+ testpmd> set raw_encap 4 eth src is 10:11:22:33:44:55 / vlan tci is 1
         inner_type is 0x0800 / ipv4 / udp dst is 4789 / vxlan vni
         is 2 / end_set
  testpmd> flow create 0 egress pattern eth / ipv4 / end actions
-        raw_encap / end
+        raw_encap index 4 / end
 
 Sample Raw decapsulation rule
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

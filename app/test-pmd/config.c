@@ -103,6 +103,10 @@ const struct rss_type_info rss_type_table[] = {
 	{ "tcp", ETH_RSS_TCP },
 	{ "sctp", ETH_RSS_SCTP },
 	{ "tunnel", ETH_RSS_TUNNEL },
+	{ "l3-src-only", ETH_RSS_L3_SRC_ONLY },
+	{ "l3-dst-only", ETH_RSS_L3_DST_ONLY },
+	{ "l4-src-only", ETH_RSS_L4_SRC_ONLY },
+	{ "l4-dst-only", ETH_RSS_L4_DST_ONLY },
 	{ NULL, 0 },
 };
 
@@ -119,9 +123,12 @@ nic_stats_display(portid_t port_id)
 {
 	static uint64_t prev_pkts_rx[RTE_MAX_ETHPORTS];
 	static uint64_t prev_pkts_tx[RTE_MAX_ETHPORTS];
+	static uint64_t prev_bytes_rx[RTE_MAX_ETHPORTS];
+	static uint64_t prev_bytes_tx[RTE_MAX_ETHPORTS];
 	static uint64_t prev_cycles[RTE_MAX_ETHPORTS];
-	uint64_t diff_pkts_rx, diff_pkts_tx, diff_cycles;
-	uint64_t mpps_rx, mpps_tx;
+	uint64_t diff_pkts_rx, diff_pkts_tx, diff_bytes_rx, diff_bytes_tx,
+								diff_cycles;
+	uint64_t mpps_rx, mpps_tx, mbps_rx, mbps_tx;
 	struct rte_eth_stats stats;
 	struct rte_port *port = &ports[port_id];
 	uint8_t i;
@@ -192,9 +199,22 @@ nic_stats_display(portid_t port_id)
 		diff_pkts_rx * rte_get_tsc_hz() / diff_cycles : 0;
 	mpps_tx = diff_cycles > 0 ?
 		diff_pkts_tx * rte_get_tsc_hz() / diff_cycles : 0;
+
+	diff_bytes_rx = (stats.ibytes > prev_bytes_rx[port_id]) ?
+		(stats.ibytes - prev_bytes_rx[port_id]) : 0;
+	diff_bytes_tx = (stats.obytes > prev_bytes_tx[port_id]) ?
+		(stats.obytes - prev_bytes_tx[port_id]) : 0;
+	prev_bytes_rx[port_id] = stats.ibytes;
+	prev_bytes_tx[port_id] = stats.obytes;
+	mbps_rx = diff_cycles > 0 ?
+		diff_bytes_rx * rte_get_tsc_hz() / diff_cycles : 0;
+	mbps_tx = diff_cycles > 0 ?
+		diff_bytes_tx * rte_get_tsc_hz() / diff_cycles : 0;
+
 	printf("\n  Throughput (since last show)\n");
-	printf("  Rx-pps: %12"PRIu64"\n  Tx-pps: %12"PRIu64"\n",
-			mpps_rx, mpps_tx);
+	printf("  Rx-pps: %12"PRIu64"          Rx-bps: %12"PRIu64"\n  Tx-pps: %12"
+	       PRIu64"          Tx-bps: %12"PRIu64"\n", mpps_rx, mbps_rx * 8,
+	       mpps_tx, mbps_tx * 8);
 
 	printf("  %s############################%s\n",
 	       nic_stats_border, nic_stats_border);
@@ -333,6 +353,7 @@ nic_stats_mapping_display(portid_t port_id)
 void
 rx_queue_infos_display(portid_t port_id, uint16_t queue_id)
 {
+	struct rte_eth_burst_mode mode;
 	struct rte_eth_rxq_info qinfo;
 	int32_t rc;
 	static const char *info_border = "*********************";
@@ -360,12 +381,20 @@ rx_queue_infos_display(portid_t port_id, uint16_t queue_id)
 	printf("\nRX scattered packets: %s",
 		(qinfo.scattered_rx != 0) ? "on" : "off");
 	printf("\nNumber of RXDs: %hu", qinfo.nb_desc);
+
+	if (rte_eth_rx_burst_mode_get(port_id, queue_id, &mode) == 0)
+		printf("\nBurst mode: %s%s",
+		       mode.info,
+		       mode.flags & RTE_ETH_BURST_FLAG_PER_QUEUE ?
+				" (per queue)" : "");
+
 	printf("\n");
 }
 
 void
 tx_queue_infos_display(portid_t port_id, uint16_t queue_id)
 {
+	struct rte_eth_burst_mode mode;
 	struct rte_eth_txq_info qinfo;
 	int32_t rc;
 	static const char *info_border = "*********************";
@@ -389,6 +418,13 @@ tx_queue_infos_display(portid_t port_id, uint16_t queue_id)
 	printf("\nTX deferred start: %s",
 		(qinfo.conf.tx_deferred_start != 0) ? "on" : "off");
 	printf("\nNumber of TXDs: %hu", qinfo.nb_desc);
+
+	if (rte_eth_tx_burst_mode_get(port_id, queue_id, &mode) == 0)
+		printf("\nBurst mode: %s%s",
+		       mode.info,
+		       mode.flags & RTE_ETH_BURST_FLAG_PER_QUEUE ?
+				" (per queue)" : "");
+
 	printf("\n");
 }
 
@@ -534,19 +570,24 @@ port_infos_display(portid_t port_id)
 	if (vlan_offload >= 0){
 		printf("VLAN offload: \n");
 		if (vlan_offload & ETH_VLAN_STRIP_OFFLOAD)
-			printf("  strip on \n");
+			printf("  strip on, ");
 		else
-			printf("  strip off \n");
+			printf("  strip off, ");
 
 		if (vlan_offload & ETH_VLAN_FILTER_OFFLOAD)
-			printf("  filter on \n");
+			printf("filter on, ");
 		else
-			printf("  filter off \n");
+			printf("filter off, ");
 
 		if (vlan_offload & ETH_VLAN_EXTEND_OFFLOAD)
-			printf("  qinq(extend) on \n");
+			printf("extend on, ");
 		else
-			printf("  qinq(extend) off \n");
+			printf("extend off, ");
+
+		if (vlan_offload & ETH_QINQ_STRIP_OFFLOAD)
+			printf("qinq strip on\n");
+		else
+			printf("qinq strip off\n");
 	}
 
 	if (dev_info.hash_key_size > 0)
@@ -3039,6 +3080,33 @@ rx_vlan_filter_set(portid_t port_id, int on)
 	if (diag < 0)
 		printf("rx_vlan_filter_set(port_pi=%d, on=%d) failed "
 	       "diag=%d\n", port_id, on, diag);
+	ports[port_id].dev_conf.rxmode.offloads = port_rx_offloads;
+}
+
+void
+rx_vlan_qinq_strip_set(portid_t port_id, int on)
+{
+	int diag;
+	int vlan_offload;
+	uint64_t port_rx_offloads = ports[port_id].dev_conf.rxmode.offloads;
+
+	if (port_id_is_invalid(port_id, ENABLED_WARN))
+		return;
+
+	vlan_offload = rte_eth_dev_get_vlan_offload(port_id);
+
+	if (on) {
+		vlan_offload |= ETH_QINQ_STRIP_OFFLOAD;
+		port_rx_offloads |= DEV_RX_OFFLOAD_QINQ_STRIP;
+	} else {
+		vlan_offload &= ~ETH_QINQ_STRIP_OFFLOAD;
+		port_rx_offloads &= ~DEV_RX_OFFLOAD_QINQ_STRIP;
+	}
+
+	diag = rte_eth_dev_set_vlan_offload(port_id, vlan_offload);
+	if (diag < 0)
+		printf("%s(port_pi=%d, on=%d) failed "
+	       "diag=%d\n", __func__, port_id, on, diag);
 	ports[port_id].dev_conf.rxmode.offloads = port_rx_offloads;
 }
 

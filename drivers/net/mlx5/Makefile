@@ -19,6 +19,7 @@ SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_rxq.c
 SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_txq.c
 SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_rxtx.c
 ifneq ($(filter y,$(CONFIG_RTE_ARCH_X86_64) \
+			$(CONFIG_RTE_ARCH_PPC_64) \
 		  $(CONFIG_RTE_ARCH_ARM64)),)
 SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_rxtx_vec.c
 endif
@@ -82,7 +83,10 @@ endif
 
 # User-defined CFLAGS.
 ifeq ($(CONFIG_RTE_LIBRTE_MLX5_DEBUG),y)
-CFLAGS += -pedantic -UNDEBUG -DPEDANTIC
+CFLAGS += -pedantic -UNDEBUG
+ifneq ($(CONFIG_RTE_TOOLCHAIN_ICC),y)
+CFLAGS += -DPEDANTIC
+endif
 AUTO_CONFIG_CFLAGS += -Wno-pedantic
 else
 CFLAGS += -DNDEBUG -UPEDANTIC

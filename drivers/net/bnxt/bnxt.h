@@ -21,12 +21,71 @@
 #include "bnxt_cpr.h"
 #include "bnxt_util.h"
 
+/* Vendor ID */
+#define PCI_VENDOR_ID_BROADCOM		0x14E4
+
+/* Device IDs */
+#define BROADCOM_DEV_ID_STRATUS_NIC_VF1 0x1606
+#define BROADCOM_DEV_ID_STRATUS_NIC_VF2 0x1609
+#define BROADCOM_DEV_ID_STRATUS_NIC	0x1614
+#define BROADCOM_DEV_ID_57414_VF	0x16c1
+#define BROADCOM_DEV_ID_57301		0x16c8
+#define BROADCOM_DEV_ID_57302		0x16c9
+#define BROADCOM_DEV_ID_57304_PF	0x16ca
+#define BROADCOM_DEV_ID_57304_VF	0x16cb
+#define BROADCOM_DEV_ID_57417_MF	0x16cc
+#define BROADCOM_DEV_ID_NS2		0x16cd
+#define BROADCOM_DEV_ID_57311		0x16ce
+#define BROADCOM_DEV_ID_57312		0x16cf
+#define BROADCOM_DEV_ID_57402		0x16d0
+#define BROADCOM_DEV_ID_57404		0x16d1
+#define BROADCOM_DEV_ID_57406_PF	0x16d2
+#define BROADCOM_DEV_ID_57406_VF	0x16d3
+#define BROADCOM_DEV_ID_57402_MF	0x16d4
+#define BROADCOM_DEV_ID_57407_RJ45	0x16d5
+#define BROADCOM_DEV_ID_57412		0x16d6
+#define BROADCOM_DEV_ID_57414		0x16d7
+#define BROADCOM_DEV_ID_57416_RJ45	0x16d8
+#define BROADCOM_DEV_ID_57417_RJ45	0x16d9
+#define BROADCOM_DEV_ID_5741X_VF	0x16dc
+#define BROADCOM_DEV_ID_57412_MF	0x16de
+#define BROADCOM_DEV_ID_57314		0x16df
+#define BROADCOM_DEV_ID_57317_RJ45	0x16e0
+#define BROADCOM_DEV_ID_5731X_VF	0x16e1
+#define BROADCOM_DEV_ID_57417_SFP	0x16e2
+#define BROADCOM_DEV_ID_57416_SFP	0x16e3
+#define BROADCOM_DEV_ID_57317_SFP	0x16e4
+#define BROADCOM_DEV_ID_57404_MF	0x16e7
+#define BROADCOM_DEV_ID_57406_MF	0x16e8
+#define BROADCOM_DEV_ID_57407_SFP	0x16e9
+#define BROADCOM_DEV_ID_57407_MF	0x16ea
+#define BROADCOM_DEV_ID_57414_MF	0x16ec
+#define BROADCOM_DEV_ID_57416_MF	0x16ee
+#define BROADCOM_DEV_ID_57508		0x1750
+#define BROADCOM_DEV_ID_57504		0x1751
+#define BROADCOM_DEV_ID_57502		0x1752
+#define BROADCOM_DEV_ID_57508_MF1	0x1800
+#define BROADCOM_DEV_ID_57504_MF1	0x1801
+#define BROADCOM_DEV_ID_57502_MF1	0x1802
+#define BROADCOM_DEV_ID_57508_MF2	0x1803
+#define BROADCOM_DEV_ID_57504_MF2	0x1804
+#define BROADCOM_DEV_ID_57502_MF2	0x1805
+#define BROADCOM_DEV_ID_57500_VF1	0x1806
+#define BROADCOM_DEV_ID_57500_VF2	0x1807
+#define BROADCOM_DEV_ID_58802		0xd802
+#define BROADCOM_DEV_ID_58804		0xd804
+#define BROADCOM_DEV_ID_58808		0x16f0
+#define BROADCOM_DEV_ID_58802_VF	0xd800
+
 #define BNXT_MAX_MTU		9574
 #define VLAN_TAG_SIZE		4
 #define BNXT_NUM_VLANS		2
 #define BNXT_MAX_PKT_LEN	(BNXT_MAX_MTU + RTE_ETHER_HDR_LEN +\
 				 RTE_ETHER_CRC_LEN +\
 				 (BNXT_NUM_VLANS * VLAN_TAG_SIZE))
+/* FW adds extra 4 bytes for FCS */
+#define BNXT_VNIC_MRU(mtu)\
+	((mtu) + RTE_ETHER_HDR_LEN + VLAN_TAG_SIZE * BNXT_NUM_VLANS)
 #define BNXT_VF_RSV_NUM_RSS_CTX	1
 #define BNXT_VF_RSV_NUM_L2_CTX	4
 /* TODO: For now, do not support VMDq/RFS on VFs. */
@@ -57,6 +116,9 @@
 #else
 #define BNXT_NUM_ASYNC_CPR(bp) 1
 #endif
+
+#define BNXT_MISC_VEC_ID               RTE_INTR_VEC_ZERO_OFFSET
+#define BNXT_RX_VEC_START              RTE_INTR_VEC_RXTX_OFFSET
 
 /* Chimp Communication Channel */
 #define GRCPF_REG_CHIMP_CHANNEL_OFFSET		0x0
@@ -521,9 +583,15 @@ struct bnxt {
 	void				*hwrm_short_cmd_req_addr;
 	rte_iova_t			hwrm_short_cmd_req_dma_addr;
 	rte_spinlock_t			hwrm_lock;
+	pthread_mutex_t			def_cp_lock;
 	uint16_t			max_req_len;
 	uint16_t			max_resp_len;
 	uint16_t                        hwrm_max_ext_req_len;
+
+	 /* default command timeout value of 50ms */
+#define HWRM_CMD_TIMEOUT		50000
+	/* default HWRM request timeout value */
+	uint32_t			hwrm_cmd_timeout;
 
 	struct bnxt_link_info	link_info;
 	struct bnxt_cos_queue_info	rx_cos_queue[BNXT_COS_QUEUE_COUNT];
@@ -577,6 +645,7 @@ struct bnxt {
 	struct bnxt_error_recovery_info *recovery_info;
 };
 
+int bnxt_mtu_set_op(struct rte_eth_dev *eth_dev, uint16_t new_mtu);
 int bnxt_link_update_op(struct rte_eth_dev *eth_dev, int wait_to_complete);
 int bnxt_rcv_msg_from_vf(struct bnxt *bp, uint16_t vf_id, void *msg);
 int is_bnxt_in_error(struct bnxt *bp);

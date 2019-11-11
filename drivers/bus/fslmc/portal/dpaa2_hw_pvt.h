@@ -59,6 +59,8 @@
 #define DPAA2_SWP_CINH_REGION		1
 #define DPAA2_SWP_CENA_MEM_REGION	2
 
+#define DPAA2_MAX_TX_RETRY_COUNT	10000
+
 #define MC_PORTAL_INDEX		0
 #define NUM_DPIO_REGIONS	2
 #define NUM_DQS_PER_QUEUE       2
@@ -183,6 +185,17 @@ struct dpaa2_dpci_dev {
 	uint32_t dpci_id; /*HW ID for DPCI object */
 	struct dpaa2_queue rx_queue[DPAA2_DPCI_MAX_QUEUES];
 	struct dpaa2_queue tx_queue[DPAA2_DPCI_MAX_QUEUES];
+};
+
+struct dpaa2_dpcon_dev {
+	TAILQ_ENTRY(dpaa2_dpcon_dev) next;
+	struct fsl_mc_io dpcon;
+	uint16_t token;
+	rte_atomic16_t in_use;
+	uint32_t dpcon_id;
+	uint16_t qbman_ch_id;
+	uint8_t num_priorities;
+	uint8_t channel_index;
 };
 
 /*! Global MCP list */

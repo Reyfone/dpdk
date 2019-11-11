@@ -55,6 +55,8 @@ enum {
 	PCI_DEVICE_ID_MELLANOX_CONNECTX5BFVF = 0xa2d3,
 	PCI_DEVICE_ID_MELLANOX_CONNECTX6 = 0x101b,
 	PCI_DEVICE_ID_MELLANOX_CONNECTX6VF = 0x101c,
+	PCI_DEVICE_ID_MELLANOX_CONNECTX6DX = 0x101d,
+	PCI_DEVICE_ID_MELLANOX_CONNECTX6DXVF = 0x101e,
 };
 
 /* Request types for IPC. */
@@ -179,11 +181,19 @@ struct mlx5_hca_attr {
 	uint32_t wqe_vlan_insert:1;
 	uint32_t wqe_inline_mode:2;
 	uint32_t vport_inline_mode:3;
+	uint32_t tunnel_stateless_geneve_rx:1;
+	uint32_t geneve_max_opt_len:1; /* 0x0: 14DW, 0x1: 63DW */
 	uint32_t lro_cap:1;
 	uint32_t tunnel_lro_gre:1;
 	uint32_t tunnel_lro_vxlan:1;
 	uint32_t lro_max_msg_sz_mode:2;
 	uint32_t lro_timer_supported_periods[MLX5_LRO_NUM_SUPP_PERIODS];
+	uint32_t flex_parser_protocols;
+	uint32_t hairpin:1;
+	uint32_t log_max_hairpin_queues:5;
+	uint32_t log_max_hairpin_wq_data_sz:5;
+	uint32_t log_max_hairpin_num_packets:5;
+	uint32_t vhca_id:16;
 };
 
 /* Flow list . */
@@ -346,6 +356,43 @@ struct mlx5_devx_rqt_attr {
 	uint32_t rq_list[];
 };
 
+/* TIS attributes structure. */
+struct mlx5_devx_tis_attr {
+	uint32_t strict_lag_tx_port_affinity:1;
+	uint32_t tls_en:1;
+	uint32_t lag_tx_port_affinity:4;
+	uint32_t prio:4;
+	uint32_t transport_domain:24;
+};
+
+/* SQ attributes structure, used by SQ create operation. */
+struct mlx5_devx_create_sq_attr {
+	uint32_t rlky:1;
+	uint32_t cd_master:1;
+	uint32_t fre:1;
+	uint32_t flush_in_error_en:1;
+	uint32_t allow_multi_pkt_send_wqe:1;
+	uint32_t min_wqe_inline_mode:3;
+	uint32_t state:4;
+	uint32_t reg_umr:1;
+	uint32_t allow_swp:1;
+	uint32_t hairpin:1;
+	uint32_t user_index:24;
+	uint32_t cqn:24;
+	uint32_t packet_pacing_rate_limit_index:16;
+	uint32_t tis_lst_sz:16;
+	uint32_t tis_num:24;
+	struct mlx5_devx_wq_attr wq_attr;
+};
+
+/* SQ attributes structure, used by SQ modify operation. */
+struct mlx5_devx_modify_sq_attr {
+	uint32_t sq_state:4;
+	uint32_t state:4;
+	uint32_t hairpin_peer_rq:24;
+	uint32_t hairpin_peer_vhca:16;
+};
+
 /**
  * Type of object being allocated.
  */
@@ -498,6 +545,7 @@ struct mlx5_flow_counter_mng {
 /* Per port data of shared IB device. */
 struct mlx5_ibv_shared_port {
 	uint32_t ih_port_id;
+	uint32_t devx_ih_port_id;
 	/*
 	 * Interrupt handler port_id. Used by shared interrupt
 	 * handler to find the corresponding rte_eth device
@@ -514,6 +562,7 @@ struct mlx5_flow_tbl_resource {
 };
 
 #define MLX5_MAX_TABLES UINT16_MAX
+#define MLX5_HAIRPIN_TX_TABLE (UINT16_MAX - 1)
 #define MLX5_MAX_TABLES_FDB UINT16_MAX
 
 #define MLX5_DBR_PAGE_SIZE 4096 /* Must be >= 512. */
@@ -529,6 +578,15 @@ struct mlx5_devx_dbr_page {
 	uint32_t dbr_count; /* Number of door-bell records in use. */
 	/* 1 bit marks matching door-bell is in use. */
 	uint64_t dbr_bitmap[MLX5_DBR_BITMAP_SIZE];
+};
+
+/* ID generation structure. */
+struct mlx5_flow_id_pool {
+	uint32_t *free_arr; /**< Pointer to the a array of free values. */
+	uint32_t base_index;
+	/**< The next index that can be used without any free elements. */
+	uint32_t *curr; /**< Pointer to the index to pop. */
+	uint32_t *last; /**< Pointer to the last element in the empty arrray. */
 };
 
 /*
@@ -585,8 +643,12 @@ struct mlx5_ibv_shared {
 	pthread_mutex_t intr_mutex; /* Interrupt config mutex. */
 	uint32_t intr_cnt; /* Interrupt handler reference counter. */
 	struct rte_intr_handle intr_handle; /* Interrupt handler for device. */
+	uint32_t devx_intr_cnt; /* Devx interrupt handler reference counter. */
 	struct rte_intr_handle intr_handle_devx; /* DEVX interrupt handler. */
 	struct mlx5dv_devx_cmd_comp *devx_comp; /* DEVX async comp obj. */
+	struct mlx5_devx_obj *tis; /* TIS object. */
+	struct mlx5_devx_obj *td; /* Transport domain. */
+	struct mlx5_flow_id_pool *flow_id_pool; /* Flow ID pool. */
 	struct mlx5_ibv_shared_port port[]; /* per device port data array. */
 };
 
@@ -641,7 +703,7 @@ struct mlx5_priv {
 	LIST_HEAD(rxqobj, mlx5_rxq_obj) rxqsobj; /* Verbs/DevX Rx queues. */
 	LIST_HEAD(hrxq, mlx5_hrxq) hrxqs; /* Verbs Hash Rx queues. */
 	LIST_HEAD(txq, mlx5_txq_ctrl) txqsctrl; /* DPDK Tx queues. */
-	LIST_HEAD(txqibv, mlx5_txq_ibv) txqsibv; /* Verbs Tx queues. */
+	LIST_HEAD(txqobj, mlx5_txq_obj) txqsobj; /* Verbs/DevX Tx queues. */
 	/* Indirection tables. */
 	LIST_HEAD(ind_tables, mlx5_ind_table_obj) ind_tbls;
 	/* Pointer to next element. */
@@ -667,6 +729,7 @@ struct mlx5_priv {
 	rte_spinlock_t uar_lock[MLX5_UAR_PAGE_NUM_MAX];
 	/* UAR same-page access control required in 32bit implementations. */
 #endif
+	uint8_t skip_default_rss_reta; /* Skip configuration of default reta. */
 };
 
 #define PORT_ID(priv) ((priv)->dev_data->port_id)
@@ -718,6 +781,8 @@ void mlx5_dev_interrupt_handler(void *arg);
 void mlx5_dev_interrupt_handler_devx(void *arg);
 void mlx5_dev_interrupt_handler_uninstall(struct rte_eth_dev *dev);
 void mlx5_dev_interrupt_handler_install(struct rte_eth_dev *dev);
+void mlx5_dev_interrupt_handler_devx_uninstall(struct rte_eth_dev *dev);
+void mlx5_dev_interrupt_handler_devx_install(struct rte_eth_dev *dev);
 int mlx5_set_link_down(struct rte_eth_dev *dev);
 int mlx5_set_link_up(struct rte_eth_dev *dev);
 int mlx5_is_removed(struct rte_eth_dev *dev);
@@ -739,6 +804,9 @@ int mlx5_get_module_info(struct rte_eth_dev *dev,
 			 struct rte_eth_dev_module_info *modinfo);
 int mlx5_get_module_eeprom(struct rte_eth_dev *dev,
 			   struct rte_dev_eeprom_info *info);
+int mlx5_hairpin_cap_get(struct rte_eth_dev *dev,
+			 struct rte_eth_hairpin_cap *cap);
+int mlx5_dev_configure_rss_reta(struct rte_eth_dev *dev);
 
 /* mlx5_mac.c */
 
@@ -828,6 +896,7 @@ int mlx5_dev_filter_ctrl(struct rte_eth_dev *dev,
 int mlx5_flow_start(struct rte_eth_dev *dev, struct mlx5_flows *list);
 void mlx5_flow_stop(struct rte_eth_dev *dev, struct mlx5_flows *list);
 int mlx5_flow_verify(struct rte_eth_dev *dev);
+int mlx5_ctrl_flow_source_queue(struct rte_eth_dev *dev, uint32_t queue);
 int mlx5_ctrl_flow_vlan(struct rte_eth_dev *dev,
 			struct rte_flow_item_eth *eth_spec,
 			struct rte_flow_item_eth *eth_mask,
@@ -907,5 +976,12 @@ struct mlx5_devx_obj *mlx5_devx_cmd_create_tir(struct ibv_context *ctx,
 					struct mlx5_devx_tir_attr *tir_attr);
 struct mlx5_devx_obj *mlx5_devx_cmd_create_rqt(struct ibv_context *ctx,
 					struct mlx5_devx_rqt_attr *rqt_attr);
+struct mlx5_devx_obj *mlx5_devx_cmd_create_sq
+	(struct ibv_context *ctx, struct mlx5_devx_create_sq_attr *sq_attr);
+int mlx5_devx_cmd_modify_sq
+	(struct mlx5_devx_obj *sq, struct mlx5_devx_modify_sq_attr *sq_attr);
+struct mlx5_devx_obj *mlx5_devx_cmd_create_tis
+	(struct ibv_context *ctx, struct mlx5_devx_tis_attr *tis_attr);
+struct mlx5_devx_obj *mlx5_devx_cmd_create_td(struct ibv_context *ctx);
 
 #endif /* RTE_PMD_MLX5_H_ */

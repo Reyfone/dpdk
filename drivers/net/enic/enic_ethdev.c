@@ -68,6 +68,7 @@ static const struct vic_speed_capa {
 
 #define ENIC_DEVARG_DISABLE_OVERLAY "disable-overlay"
 #define ENIC_DEVARG_ENABLE_AVX2_RX "enable-avx2-rx"
+#define ENIC_DEVARG_GENEVE_OPT "geneve-opt"
 #define ENIC_DEVARG_IG_VLAN_REWRITE "ig-vlan-rewrite"
 
 RTE_INIT(enicpmd_init_log)
@@ -128,15 +129,25 @@ enicpmd_dev_filter_ctrl(struct rte_eth_dev *dev,
 		     enum rte_filter_op filter_op,
 		     void *arg)
 {
+	struct enic *enic = pmd_priv(dev);
 	int ret = 0;
 
 	ENICPMD_FUNC_TRACE();
 
+	/*
+	 * Currently, when Geneve with options offload is enabled, host
+	 * cannot insert match-action rules.
+	 */
+	if (enic->geneve_opt_enabled)
+		return -ENOTSUP;
 	switch (filter_type) {
 	case RTE_ETH_FILTER_GENERIC:
 		if (filter_op != RTE_ETH_FILTER_GET)
 			return -EINVAL;
-		*(const void **)arg = &enic_flow_ops;
+		if (enic->flow_filter_mode == FILTER_FLOWMAN)
+			*(const void **)arg = &enic_fm_flow_ops;
+		else
+			*(const void **)arg = &enic_flow_ops;
 		break;
 	case RTE_ETH_FILTER_FDIR:
 		ret = enicpmd_fdir_ctrl_func(dev, filter_op, arg);
@@ -460,10 +471,8 @@ static void enicpmd_dev_close(struct rte_eth_dev *eth_dev)
 static int enicpmd_dev_link_update(struct rte_eth_dev *eth_dev,
 	__rte_unused int wait_to_complete)
 {
-	struct enic *enic = pmd_priv(eth_dev);
-
 	ENICPMD_FUNC_TRACE();
-	return enic_link_update(enic);
+	return enic_link_update(eth_dev);
 }
 
 static int enicpmd_dev_stats_get(struct rte_eth_dev *eth_dev,
@@ -498,6 +507,12 @@ static uint32_t speed_capa_from_pci_id(struct rte_eth_dev *eth_dev)
 	/* 1300 and later models are at least 40G */
 	if (id >= 0x0100)
 		return ETH_LINK_SPEED_40G;
+	/* VFs have subsystem id 0, check device id */
+	if (id == 0) {
+		/* Newer VF implies at least 40G model */
+		if (pdev->id.device_id == PCI_DEVICE_ID_CISCO_VIC_ENET_SN)
+			return ETH_LINK_SPEED_40G;
+	}
 	return ETH_LINK_SPEED_10G;
 }
 
@@ -1047,7 +1062,7 @@ static int enicpmd_dev_udp_tunnel_port_del(struct rte_eth_dev *eth_dev,
 			     tnl->udp_port);
 		return -EINVAL;
 	}
-	return update_vxlan_port(enic, ENIC_DEFAULT_VXLAN_PORT);
+	return update_vxlan_port(enic, RTE_VXLAN_DEFAULT_PORT);
 }
 
 static int enicpmd_dev_fw_version_get(struct rte_eth_dev *eth_dev,
@@ -1146,6 +1161,8 @@ static int enic_parse_zero_one(const char *key,
 		enic->disable_overlay = b;
 	if (strcmp(key, ENIC_DEVARG_ENABLE_AVX2_RX) == 0)
 		enic->enable_avx2_rx = b;
+	if (strcmp(key, ENIC_DEVARG_GENEVE_OPT) == 0)
+		enic->geneve_opt_request = b;
 	return 0;
 }
 
@@ -1187,6 +1204,7 @@ static int enic_check_devargs(struct rte_eth_dev *dev)
 	static const char *const valid_keys[] = {
 		ENIC_DEVARG_DISABLE_OVERLAY,
 		ENIC_DEVARG_ENABLE_AVX2_RX,
+		ENIC_DEVARG_GENEVE_OPT,
 		ENIC_DEVARG_IG_VLAN_REWRITE,
 		NULL};
 	struct enic *enic = pmd_priv(dev);
@@ -1196,6 +1214,7 @@ static int enic_check_devargs(struct rte_eth_dev *dev)
 
 	enic->disable_overlay = false;
 	enic->enable_avx2_rx = false;
+	enic->geneve_opt_request = false;
 	enic->ig_vlan_rewrite_mode = IG_VLAN_REWRITE_MODE_PASS_THRU;
 	if (!dev->device->devargs)
 		return 0;
@@ -1205,6 +1224,8 @@ static int enic_check_devargs(struct rte_eth_dev *dev)
 	if (rte_kvargs_process(kvlist, ENIC_DEVARG_DISABLE_OVERLAY,
 			       enic_parse_zero_one, enic) < 0 ||
 	    rte_kvargs_process(kvlist, ENIC_DEVARG_ENABLE_AVX2_RX,
+			       enic_parse_zero_one, enic) < 0 ||
+	    rte_kvargs_process(kvlist, ENIC_DEVARG_GENEVE_OPT,
 			       enic_parse_zero_one, enic) < 0 ||
 	    rte_kvargs_process(kvlist, ENIC_DEVARG_IG_VLAN_REWRITE,
 			       enic_parse_ig_vlan_rewrite, enic) < 0) {
@@ -1227,12 +1248,19 @@ static int eth_enicpmd_dev_init(struct rte_eth_dev *eth_dev)
 
 	ENICPMD_FUNC_TRACE();
 
-	enic->port_id = eth_dev->data->port_id;
-	enic->rte_dev = eth_dev;
 	eth_dev->dev_ops = &enicpmd_eth_dev_ops;
 	eth_dev->rx_pkt_burst = &enic_recv_pkts;
 	eth_dev->tx_pkt_burst = &enic_xmit_pkts;
 	eth_dev->tx_pkt_prepare = &enic_prep_pkts;
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
+		enic_pick_tx_handler(eth_dev);
+		enic_pick_rx_handler(eth_dev);
+		return 0;
+	}
+	/* Only the primary sets up adapter and other data in shared memory */
+	enic->port_id = eth_dev->data->port_id;
+	enic->rte_dev = eth_dev;
+	enic->dev_data = eth_dev->data;
 	/* Let rte_eth_dev_close() release the port resources */
 	eth_dev->data->dev_flags |= RTE_ETH_DEV_CLOSE_REMOVE;
 
@@ -1269,10 +1297,16 @@ static struct rte_pci_driver rte_enic_pmd = {
 	.remove = eth_enic_pci_remove,
 };
 
+int dev_is_enic(struct rte_eth_dev *dev)
+{
+	return dev->device->driver == &rte_enic_pmd.driver;
+}
+
 RTE_PMD_REGISTER_PCI(net_enic, rte_enic_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_enic, pci_id_enic_map);
 RTE_PMD_REGISTER_KMOD_DEP(net_enic, "* igb_uio | uio_pci_generic | vfio-pci");
 RTE_PMD_REGISTER_PARAM_STRING(net_enic,
 	ENIC_DEVARG_DISABLE_OVERLAY "=0|1 "
 	ENIC_DEVARG_ENABLE_AVX2_RX "=0|1 "
+	ENIC_DEVARG_GENEVE_OPT "=0|1 "
 	ENIC_DEVARG_IG_VLAN_REWRITE "=trunk|untag|priority|pass");

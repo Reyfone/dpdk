@@ -8,7 +8,6 @@
 #include <rte_malloc.h>
 
 #include "bnxt.h"
-#include "bnxt_cpr.h"
 #include "bnxt_filter.h"
 #include "bnxt_hwrm.h"
 #include "bnxt_ring.h"
@@ -64,6 +63,7 @@ int bnxt_mq_rx_configure(struct bnxt *bp)
 			rc = -ENOMEM;
 			goto err_out;
 		}
+		filter->mac_index = 0;
 		filter->flags |= HWRM_CFA_L2_FILTER_ALLOC_INPUT_FLAGS_OUTERMOST;
 		STAILQ_INSERT_TAIL(&vnic->filter, filter, next);
 		goto out;
@@ -147,6 +147,7 @@ int bnxt_mq_rx_configure(struct bnxt *bp)
 			rc = -ENOMEM;
 			goto err_out;
 		}
+		filter->mac_index = 0;
 		filter->flags |= HWRM_CFA_L2_FILTER_ALLOC_INPUT_FLAGS_OUTERMOST;
 		/*
 		 * TODO: Configure & associate CFA rule for
@@ -367,6 +368,10 @@ int bnxt_rx_queue_setup_op(struct rte_eth_dev *eth_dev,
 	eth_dev->data->rx_queue_state[queue_idx] = queue_state;
 	rte_spinlock_init(&rxq->lock);
 
+	/* Configure mtu if it is different from what was configured before */
+	if (!queue_idx)
+		bnxt_mtu_set_op(eth_dev, eth_dev->data->mtu);
+
 out:
 	return rc;
 }
@@ -385,10 +390,9 @@ bnxt_rx_queue_intr_enable_op(struct rte_eth_dev *eth_dev, uint16_t queue_id)
 
 	if (eth_dev->data->rx_queues) {
 		rxq = eth_dev->data->rx_queues[queue_id];
-		if (!rxq) {
-			rc = -EINVAL;
-			return rc;
-		}
+		if (!rxq)
+			return -EINVAL;
+
 		cpr = rxq->cp_ring;
 		B_CP_DB_REARM(cpr, cpr->cp_raw_cons);
 	}
@@ -409,10 +413,9 @@ bnxt_rx_queue_intr_disable_op(struct rte_eth_dev *eth_dev, uint16_t queue_id)
 
 	if (eth_dev->data->rx_queues) {
 		rxq = eth_dev->data->rx_queues[queue_id];
-		if (!rxq) {
-			rc = -EINVAL;
-			return rc;
-		}
+		if (!rxq)
+			return -EINVAL;
+
 		cpr = rxq->cp_ring;
 		B_CP_DB_DISARM(cpr);
 	}
@@ -441,11 +444,17 @@ int bnxt_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 	 * If queue is it started, we do not post buffers for Rx.
 	 */
 	rxq->rx_started = true;
+	dev->data->rx_queue_state[rx_queue_id] = RTE_ETH_QUEUE_STATE_STARTED;
+
 	bnxt_free_hwrm_rx_ring(bp, rx_queue_id);
 	rc = bnxt_alloc_hwrm_rx_ring(bp, rx_queue_id);
 	if (rc)
 		return rc;
 
+	if (BNXT_CHIP_THOR(bp)) {
+		/* Reconfigure default receive ring and MRU. */
+		bnxt_hwrm_vnic_cfg(bp, rxq->vnic);
+	}
 	PMD_DRV_LOG(INFO, "Rx queue started %d\n", rx_queue_id);
 
 	if (dev_conf->rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG) {
@@ -463,15 +472,14 @@ int bnxt_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 		}
 
 		PMD_DRV_LOG(DEBUG, "Rx Queue Count %d\n", vnic->rx_queue_cnt);
-		if (vnic->rx_queue_cnt > 1)
-			rc = bnxt_vnic_rss_configure(bp, vnic);
+		rc = bnxt_vnic_rss_configure(bp, vnic);
 	}
 
-	if (rc == 0)
+	if (rc != 0) {
 		dev->data->rx_queue_state[rx_queue_id] =
-				RTE_ETH_QUEUE_STATE_STARTED;
-	else
+				RTE_ETH_QUEUE_STATE_STOPPED;
 		rxq->rx_started = false;
+	}
 
 	PMD_DRV_LOG(INFO,
 		    "queue %d, rx_deferred_start %d, state %d!\n",
@@ -487,7 +495,8 @@ int bnxt_rx_queue_stop(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 	struct rte_eth_conf *dev_conf = &bp->eth_dev->data->dev_conf;
 	struct bnxt_vnic_info *vnic = NULL;
 	struct bnxt_rx_queue *rxq = NULL;
-	int rc = 0;
+	int active_queue_cnt = 0;
+	int i, rc = 0;
 
 	rc = is_bnxt_in_error(bp);
 	if (rc)
@@ -503,8 +512,9 @@ int bnxt_rx_queue_stop(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 	}
 
 	rxq = bp->rx_queues[rx_queue_id];
+	vnic = rxq->vnic;
 
-	if (rxq == NULL) {
+	if (!rxq || !vnic) {
 		PMD_DRV_LOG(ERR, "Invalid Rx queue %d\n", rx_queue_id);
 		return -EINVAL;
 	}
@@ -514,13 +524,38 @@ int bnxt_rx_queue_stop(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 	PMD_DRV_LOG(DEBUG, "Rx queue stopped\n");
 
 	if (dev_conf->rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG) {
-		vnic = rxq->vnic;
 		if (BNXT_HAS_RING_GRPS(bp))
 			vnic->fw_grp_ids[rx_queue_id] = INVALID_HW_RING_ID;
 
 		PMD_DRV_LOG(DEBUG, "Rx Queue Count %d\n", vnic->rx_queue_cnt);
-		if (vnic->rx_queue_cnt > 1)
-			rc = bnxt_vnic_rss_configure(bp, vnic);
+		rc = bnxt_vnic_rss_configure(bp, vnic);
+	}
+
+	if (BNXT_CHIP_THOR(bp)) {
+		/* Compute current number of active receive queues. */
+		for (i = vnic->start_grp_id; i < vnic->end_grp_id; i++)
+			if (bp->rx_queues[i]->rx_started)
+				active_queue_cnt++;
+
+		/*
+		 * For Thor, we need to ensure that the VNIC default receive
+		 * ring corresponds to an active receive queue. When no queue
+		 * is active, we need to temporarily set the MRU to zero so
+		 * that packets are dropped early in the receive pipeline in
+		 * order to prevent the VNIC default receive ring from being
+		 * accessed.
+		 */
+		if (active_queue_cnt == 0) {
+			uint16_t saved_mru = vnic->mru;
+
+			vnic->mru = 0;
+			/* Reconfigure default receive ring and MRU. */
+			bnxt_hwrm_vnic_cfg(bp, vnic);
+			vnic->mru = saved_mru;
+		} else {
+			/* Reconfigure default receive ring. */
+			bnxt_hwrm_vnic_cfg(bp, vnic);
+		}
 	}
 
 	if (rc == 0)

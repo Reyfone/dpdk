@@ -44,7 +44,7 @@
 #include <fsl_usd.h>
 #include <fsl_qman.h>
 #include <fsl_bman.h>
-#include <of.h>
+#include <dpaa_of.h>
 #include <netcfg.h>
 
 #define DPAA_MBUF_TO_CONTIG_FD(_mbuf, _fd, _bpid) \
@@ -927,7 +927,7 @@ dpaa_eth_queue_tx(void *q, struct rte_mbuf **bufs, uint16_t nb_bufs)
 			 * the buffer in such case.
 			 */
 			if (dpaa_svr_family == SVR_LS1043A_FAMILY &&
-					(mbuf->data_off & 0xFF) != 0x0)
+					(mbuf->data_off & 0x7F) != 0x0)
 				realloc_mbuf = 1;
 			seqn = mbuf->seqn;
 			if (seqn != DPAA_INVALID_MBUF_SEQN) {

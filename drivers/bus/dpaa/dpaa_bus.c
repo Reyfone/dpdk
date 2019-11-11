@@ -32,6 +32,7 @@
 #include <rte_bus.h>
 #include <rte_mbuf_pool_ops.h>
 
+#include <dpaa_of.h>
 #include <rte_dpaa_bus.h>
 #include <rte_dpaa_logs.h>
 #include <dpaax_iova_table.h>
@@ -39,7 +40,6 @@
 #include <fsl_usd.h>
 #include <fsl_qman.h>
 #include <fsl_bman.h>
-#include <of.h>
 #include <netcfg.h>
 
 int dpaa_logtype_bus;
@@ -561,8 +561,24 @@ rte_dpaa_bus_probe(void)
 		return 0;
 
 	/* Device list creation is only done once */
-	if (!process_once)
+	if (!process_once) {
 		rte_dpaa_bus_dev_build();
+		if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+			/* One time load of Qman/Bman drivers */
+			ret = qman_global_init();
+			if (ret) {
+				DPAA_PMD_ERR("QMAN initialization failed: %d",
+					     ret);
+				return ret;
+			}
+			ret = bman_global_init();
+			if (ret) {
+				DPAA_PMD_ERR("BMAN initialization failed: %d",
+					     ret);
+				return ret;
+			}
+		}
+	}
 	process_once = 1;
 
 	/* If no device present on DPAA bus nothing needs to be done */
@@ -600,7 +616,8 @@ rte_dpaa_bus_probe(void)
 			    RTE_DEV_WHITELISTED)) {
 				ret = drv->probe(drv, dev);
 				if (ret) {
-					DPAA_BUS_ERR("Unable to probe.\n");
+					DPAA_BUS_ERR("unable to probe:%s",
+						     dev->name);
 				} else {
 					dev->driver = drv;
 					dev->device.driver = &drv->driver;

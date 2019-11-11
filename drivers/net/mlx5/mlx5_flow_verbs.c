@@ -191,7 +191,7 @@ flow_verbs_counter_query(struct rte_eth_dev *dev __rte_unused,
 {
 #if defined(HAVE_IBV_DEVICE_COUNTERS_SET_V42) || \
 	defined(HAVE_IBV_DEVICE_COUNTERS_SET_V45)
-	if (flow->actions & MLX5_FLOW_ACTION_COUNT) {
+	if (flow->counter->cs) {
 		struct rte_flow_query_count *qc = data;
 		uint64_t counters[2] = {0, 0};
 #if defined(HAVE_IBV_DEVICE_COUNTERS_SET_V42)
@@ -1037,6 +1037,7 @@ flow_verbs_validate(struct rte_eth_dev *dev,
 	uint64_t item_flags = 0;
 	uint64_t last_item = 0;
 	uint8_t next_protocol = 0xff;
+	uint16_t ether_type = 0;
 
 	if (items == NULL)
 		return -1;
@@ -1057,6 +1058,17 @@ flow_verbs_validate(struct rte_eth_dev *dev,
 				return ret;
 			last_item = tunnel ? MLX5_FLOW_LAYER_INNER_L2 :
 					     MLX5_FLOW_LAYER_OUTER_L2;
+			if (items->mask != NULL && items->spec != NULL) {
+				ether_type =
+					((const struct rte_flow_item_eth *)
+					 items->spec)->type;
+				ether_type &=
+					((const struct rte_flow_item_eth *)
+					 items->mask)->type;
+				ether_type = rte_be_to_cpu_16(ether_type);
+			} else {
+				ether_type = 0;
+			}
 			break;
 		case RTE_FLOW_ITEM_TYPE_VLAN:
 			ret = mlx5_flow_validate_item_vlan(items, item_flags,
@@ -1067,10 +1079,23 @@ flow_verbs_validate(struct rte_eth_dev *dev,
 					      MLX5_FLOW_LAYER_INNER_VLAN) :
 					     (MLX5_FLOW_LAYER_OUTER_L2 |
 					      MLX5_FLOW_LAYER_OUTER_VLAN);
+			if (items->mask != NULL && items->spec != NULL) {
+				ether_type =
+					((const struct rte_flow_item_vlan *)
+					 items->spec)->inner_type;
+				ether_type &=
+					((const struct rte_flow_item_vlan *)
+					 items->mask)->inner_type;
+				ether_type = rte_be_to_cpu_16(ether_type);
+			} else {
+				ether_type = 0;
+			}
 			break;
 		case RTE_FLOW_ITEM_TYPE_IPV4:
 			ret = mlx5_flow_validate_item_ipv4(items, item_flags,
-							   NULL, error);
+							   last_item,
+							   ether_type, NULL,
+							   error);
 			if (ret < 0)
 				return ret;
 			last_item = tunnel ? MLX5_FLOW_LAYER_INNER_L3_IPV4 :
@@ -1091,7 +1116,9 @@ flow_verbs_validate(struct rte_eth_dev *dev,
 			break;
 		case RTE_FLOW_ITEM_TYPE_IPV6:
 			ret = mlx5_flow_validate_item_ipv6(items, item_flags,
-							   NULL, error);
+							   last_item,
+							   ether_type, NULL,
+							   error);
 			if (ret < 0)
 				return ret;
 			last_item = tunnel ? MLX5_FLOW_LAYER_INNER_L3_IPV6 :
@@ -1410,7 +1437,6 @@ flow_verbs_translate(struct rte_eth_dev *dev,
 		     const struct rte_flow_action actions[],
 		     struct rte_flow_error *error)
 {
-	struct rte_flow *flow = dev_flow->flow;
 	uint64_t item_flags = 0;
 	uint64_t action_flags = 0;
 	uint64_t priority = attr->priority;
@@ -1460,7 +1486,7 @@ flow_verbs_translate(struct rte_eth_dev *dev,
 						  "action not supported");
 		}
 	}
-	flow->actions = action_flags;
+	dev_flow->actions = action_flags;
 	for (; items->type != RTE_FLOW_ITEM_TYPE_END; items++) {
 		int tunnel = !!(item_flags & MLX5_FLOW_LAYER_TUNNEL);
 
@@ -1592,7 +1618,7 @@ flow_verbs_remove(struct rte_eth_dev *dev, struct rte_flow *flow)
 			verbs->flow = NULL;
 		}
 		if (verbs->hrxq) {
-			if (flow->actions & MLX5_FLOW_ACTION_DROP)
+			if (dev_flow->actions & MLX5_FLOW_ACTION_DROP)
 				mlx5_hrxq_drop_release(dev);
 			else
 				mlx5_hrxq_release(dev, verbs->hrxq);
@@ -1656,7 +1682,7 @@ flow_verbs_apply(struct rte_eth_dev *dev, struct rte_flow *flow,
 
 	LIST_FOREACH(dev_flow, &flow->dev_flows, next) {
 		verbs = &dev_flow->verbs;
-		if (flow->actions & MLX5_FLOW_ACTION_DROP) {
+		if (dev_flow->actions & MLX5_FLOW_ACTION_DROP) {
 			verbs->hrxq = mlx5_hrxq_drop_new(dev);
 			if (!verbs->hrxq) {
 				rte_flow_error_set
@@ -1717,7 +1743,7 @@ error:
 	LIST_FOREACH(dev_flow, &flow->dev_flows, next) {
 		verbs = &dev_flow->verbs;
 		if (verbs->hrxq) {
-			if (flow->actions & MLX5_FLOW_ACTION_DROP)
+			if (dev_flow->actions & MLX5_FLOW_ACTION_DROP)
 				mlx5_hrxq_drop_release(dev);
 			else
 				mlx5_hrxq_release(dev, verbs->hrxq);

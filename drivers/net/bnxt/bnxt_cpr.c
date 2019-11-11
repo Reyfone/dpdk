@@ -8,7 +8,6 @@
 #include <rte_cycles.h>
 
 #include "bnxt.h"
-#include "bnxt_cpr.h"
 #include "bnxt_hwrm.h"
 #include "bnxt_ring.h"
 #include "hsi_struct_def_dpdk.h"
@@ -59,8 +58,6 @@ void bnxt_handle_async_event(struct bnxt *bp,
 	struct bnxt_error_recovery_info *info;
 	uint32_t event_data;
 
-	/* TODO: HWRM async events are not defined yet */
-	/* Needs to handle: link events, error events, etc. */
 	switch (event_id) {
 	case HWRM_ASYNC_EVENT_CMPL_EVENT_ID_LINK_STATUS_CHANGE:
 	case HWRM_ASYNC_EVENT_CMPL_EVENT_ID_LINK_SPEED_CHANGE:

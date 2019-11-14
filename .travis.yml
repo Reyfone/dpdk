@@ -54,7 +54,6 @@ matrix:
           - *required_packages
   - env: DEF_LIB="static" OPTS="-Denable_kmods=false"
     arch: arm64
-    dist: bionic
     compiler: clang
     addons:
       apt:
@@ -62,7 +61,6 @@ matrix:
           - *required_packages
   - env: DEF_LIB="shared" OPTS="-Denable_kmods=false"
     arch: arm64
-    dist: bionic
     compiler: clang
     addons:
       apt:

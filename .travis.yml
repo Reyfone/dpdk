@@ -42,7 +42,6 @@ matrix:
     arch: arm64
     compiler:
       - gcc
-      - clang
     addons:
       apt:
         packages:
@@ -51,6 +50,21 @@ matrix:
     arch: arm64
     compiler:
       - gcc
+    addons:
+      apt:
+        packages:
+          - *required_packages
+  - env: DEF_LIB="static" OPTS="-Denable_kmods=false"
+    arch: arm64
+    compiler:
+      - clang
+    addons:
+      apt:
+        packages:
+          - *required_packages
+  - env: DEF_LIB="shared" OPTS="-Denable_kmods=false"
+    arch: arm64
+    compiler:
       - clang
     addons:
       apt:

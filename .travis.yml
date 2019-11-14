@@ -40,32 +40,28 @@ matrix:
   include:
   - env: DEF_LIB="static" OPTS="-Denable_kmods=false"
     arch: arm64
-    compiler:
-      - gcc
+    compiler: gcc
     addons:
       apt:
         packages:
           - *required_packages
   - env: DEF_LIB="shared" OPTS="-Denable_kmods=false"
     arch: arm64
-    compiler:
-      - gcc
+    compiler: gcc
     addons:
       apt:
         packages:
           - *required_packages
   - env: DEF_LIB="static" OPTS="-Denable_kmods=false"
     arch: arm64
-    compiler:
-      - clang
+    compiler: clang
     addons:
       apt:
         packages:
           - *required_packages
   - env: DEF_LIB="shared" OPTS="-Denable_kmods=false"
     arch: arm64
-    compiler:
-      - clang
+    compiler: clang
     addons:
       apt:
         packages:

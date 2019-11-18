@@ -3,8 +3,6 @@
 # need to install as 'root' since some of the unit tests won't run without it
 sudo python3 -m pip install --upgrade meson
 
-ls /lib/modules
-ls /lib/modules/linux-headers-$(uname -r)
 # linux header and hugepage settings are skipped on arm64 due to environment limitation
 if [ "$TRAVIS_ARCH" != "aarch64" ]; then
 # add Canonical Kernel Team PPA for newer version kernel header package

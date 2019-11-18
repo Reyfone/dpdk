@@ -135,13 +135,20 @@ matrix:
       apt:
         packages:
           - *required_packages
-  - env: DEF_LIB="shared" EXTRA_PACKAGES=1 RUN_TESTS=1 BUILD_DOCS=1
+  - env: DEF_LIB="shared" OPTS="-Denable_kmods=false" BUILD_DOCS=1
     arch: arm64
     compiler: gcc
     addons:
       apt:
         packages:
-          - *extra_packages
+          - *required_packages
           - *doc_packages
+  - env: DEF_LIB="static"
+    arch: arm64
+    compiler: gcc
+    addons:
+      apt:
+        packages:
+          - *required_packages
 
 script: ./.ci/${TRAVIS_OS_NAME}-build.sh

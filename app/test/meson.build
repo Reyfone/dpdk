@@ -418,7 +418,7 @@ foreach arg : fast_test_names
 	if host_machine.system() == 'linux'
 		test(arg, dpdk_test,
 			  env : ['DPDK_TEST=' + arg],
-			  args : test_args +
+			  args : test_args + '--no-huge' +
 				 ['--file-prefix=@0@'.format(arg)],
 		timeout : timeout_seconds_fast,
 		is_parallel : false,

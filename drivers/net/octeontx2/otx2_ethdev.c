@@ -86,6 +86,7 @@ nix_lf_alloc(struct otx2_eth_dev *dev, uint32_t nb_rxq, uint32_t nb_txq)
 	dev->cints = rsp->cints;
 	dev->qints = rsp->qints;
 	dev->npc_flow.channel = dev->rx_chan_base;
+	dev->ptp_en = rsp->hw_rx_tstamp_en;
 
 	return 0;
 }
@@ -204,7 +205,7 @@ cgx_intlbk_enable(struct otx2_eth_dev *dev, bool en)
 	struct otx2_mbox *mbox = dev->mbox;
 
 	if (otx2_dev_is_vf_or_sdp(dev))
-		return 0;
+		return -ENOTSUP;
 
 	if (en)
 		otx2_mbox_alloc_msg_cgx_intlbk_enable(mbox);
@@ -599,7 +600,8 @@ nix_rx_offload_flags(struct rte_eth_dev *eth_dev)
 	struct rte_eth_rxmode *rxmode = &conf->rxmode;
 	uint16_t flags = 0;
 
-	if (rxmode->mq_mode == ETH_MQ_RX_RSS)
+	if (rxmode->mq_mode == ETH_MQ_RX_RSS &&
+			(dev->rx_offloads & DEV_RX_OFFLOAD_RSS_HASH))
 		flags |= NIX_RX_OFFLOAD_RSS_F;
 
 	if (dev->rx_offloads & (DEV_RX_OFFLOAD_TCP_CKSUM |
@@ -619,6 +621,9 @@ nix_rx_offload_flags(struct rte_eth_dev *eth_dev)
 
 	if ((dev->rx_offloads & DEV_RX_OFFLOAD_TIMESTAMP))
 		flags |= NIX_RX_OFFLOAD_TSTAMP_F;
+
+	if (!dev->ptype_disable)
+		flags |= NIX_RX_OFFLOAD_PTYPE_F;
 
 	return flags;
 }
@@ -1700,13 +1705,13 @@ otx2_nix_configure(struct rte_eth_dev *eth_dev)
 	rc = cgx_intlbk_enable(dev, eth_dev->data->dev_conf.lpbk_mode);
 	if (rc) {
 		otx2_err("Failed to configure cgx loop back mode rc=%d", rc);
-		goto q_irq_fini;
+		goto cq_fini;
 	}
 
 	rc = otx2_nix_rxchan_bpid_cfg(eth_dev, true);
 	if (rc) {
 		otx2_err("Failed to configure nix rx chan bpid cfg rc=%d", rc);
-		goto q_irq_fini;
+		goto cq_fini;
 	}
 
 	rc = otx2_nix_mc_addr_list_install(eth_dev);
@@ -1899,7 +1904,11 @@ otx2_nix_dev_start(struct rte_eth_dev *eth_dev)
 	struct otx2_eth_dev *dev = otx2_eth_pmd_priv(eth_dev);
 	int rc, i;
 
-	if (eth_dev->data->nb_rx_queues != 0) {
+	/* MTU recalculate should be avoided here if PTP is enabled by PF, as
+	 * otx2_nix_recalc_mtu would be invoked during otx2_nix_ptp_enable_vf
+	 * call below.
+	 */
+	if (eth_dev->data->nb_rx_queues != 0 && !otx2_ethdev_is_ptp_en(dev)) {
 		rc = otx2_nix_recalc_mtu(eth_dev);
 		if (rc)
 			return rc;
@@ -1934,6 +1943,12 @@ otx2_nix_dev_start(struct rte_eth_dev *eth_dev)
 		otx2_nix_timesync_enable(eth_dev);
 	else
 		otx2_nix_timesync_disable(eth_dev);
+
+	/* Update VF about data off shifted by 8 bytes if PTP already
+	 * enabled in PF owning this VF
+	 */
+	if (otx2_ethdev_is_ptp_en(dev) && otx2_dev_is_vf(dev))
+		otx2_nix_ptp_enable_vf(eth_dev);
 
 	rc = npc_rx_enable(dev);
 	if (rc) {
@@ -1983,6 +1998,7 @@ static const struct eth_dev_ops otx2_eth_dev_ops = {
 	.dev_set_link_up          = otx2_nix_dev_set_link_up,
 	.dev_set_link_down        = otx2_nix_dev_set_link_down,
 	.dev_supported_ptypes_get = otx2_nix_supported_ptypes_get,
+	.dev_ptypes_set           = otx2_nix_ptypes_set,
 	.dev_reset                = otx2_nix_dev_reset,
 	.stats_get                = otx2_nix_dev_stats_get,
 	.stats_reset              = otx2_nix_dev_stats_reset,
@@ -2008,6 +2024,8 @@ static const struct eth_dev_ops otx2_eth_dev_ops = {
 	.xstats_get_names_by_id   = otx2_nix_xstats_get_names_by_id,
 	.rxq_info_get             = otx2_nix_rxq_info_get,
 	.txq_info_get             = otx2_nix_txq_info_get,
+	.rx_burst_mode_get        = otx2_rx_burst_mode_get,
+	.tx_burst_mode_get        = otx2_tx_burst_mode_get,
 	.rx_queue_count           = otx2_nix_rx_queue_count,
 	.rx_descriptor_done       = otx2_nix_rx_descriptor_done,
 	.rx_descriptor_status     = otx2_nix_rx_descriptor_status,
@@ -2153,6 +2171,7 @@ otx2_eth_dev_init(struct rte_eth_dev *eth_dev)
 
 	dev->configured = 0;
 	dev->drv_inited = true;
+	dev->ptype_disable = 0;
 	dev->base = dev->bar2 + (RVU_BLOCK_ADDR_NIX0 << 20);
 	dev->lmt_addr = dev->bar2 + (RVU_BLOCK_ADDR_LMT << 20);
 

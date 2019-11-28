@@ -156,9 +156,9 @@ Make your planned changes in the cloned ``dpdk`` repo. Here are some guidelines 
 
   * For other PMDs and more info, refer to the ``MAINTAINERS`` file.
 
-* New external functions should be added to the local ``version.map`` file.
-  See the :doc:`Guidelines for ABI policy and versioning </contributing/versioning>`.
-  New external functions should also be added in alphabetical order.
+* New external functions should be added to the local ``version.map`` file. See
+  the :doc:`ABI policy <abi_policy>` and :ref:`ABI versioning <abi_versioning>`
+  guides. New external functions should also be added in alphabetical order.
 
 * Important changes will require an addition to the release notes in ``doc/guides/rel_notes/``.
   See the :ref:`Release Notes section of the Documentation Guidelines <doc_guidelines>` for details.
@@ -407,8 +407,17 @@ This uses the Linux kernel development tool ``checkpatch.pl`` which  can be obta
 updating the Linux kernel sources.
 
 The path to the original Linux script must be set in the environment variable ``DPDK_CHECKPATCH_PATH``.
-This, and any other configuration variables required by the development tools, are loaded from the following
-files, in order of preference::
+
+Spell checking of commonly misspelled words
+can be enabled by downloading the codespell dictionary::
+
+   https://raw.githubusercontent.com/codespell-project/codespell/master/codespell_lib/data/dictionary.txt
+
+The path to the downloaded ``dictionary.txt`` must be set
+in the environment variable ``DPDK_CHECKPATCH_CODESPELL``.
+
+Environment variables required by the development tools,
+are loaded from the following files, in order of preference::
 
    .develconfig
    ~/.config/dpdk/devel.config

@@ -4,9 +4,9 @@
 ABI and API Deprecation
 =======================
 
-See the :doc:`guidelines document for details of the ABI policy </contributing/versioning>`.
-API and ABI deprecation notices are to be posted here.
-
+See the guidelines document for details of the :doc:`ABI policy
+<../contributing/abi_policy>`. API and ABI deprecation notices are to be posted
+here.
 
 Deprecation Notices
 -------------------
@@ -59,33 +59,13 @@ Deprecation Notices
   - ``rte_eth_dev_stop``
   - ``rte_eth_dev_close``
 
-* ethdev: New offload flags ``DEV_RX_OFFLOAD_RSS_HASH`` and
-  ``DEV_RX_OFFLOAD_FLOW_MARK`` will be added in 19.11.
+* ethdev: New offload flags ``DEV_RX_OFFLOAD_FLOW_MARK`` will be added in 19.11.
   This will allow application to enable or disable PMDs from updating
-  ``rte_mbuf::hash::rss`` and ``rte_mbuf::hash::fdir`` respectively.
+  ``rte_mbuf::hash::fdir``.
   This scheme will allow PMDs to avoid writes to ``rte_mbuf`` fields on Rx and
   thereby improve Rx performance if application wishes do so.
-  In 19.11 PMDs will still update the fields even when the offloads are not
+  In 19.11 PMDs will still update the field even when the offload is not
   enabled.
-
-* ethdev: New function ``rte_eth_dev_set_supported_ptypes`` will be added in
-  19.11.
-  This will allow application to request PMD to set specific ptypes defined
-  through ``rte_eth_dev_set_supported_ptypes`` in ``rte_mbuf::packet_type``.
-  If application doesn't want any ptype information it can call
-  ``rte_eth_dev_set_supported_ptypes(ethdev_id, RTE_PTYPE_UNKNOWN)`` and PMD
-  will set ``rte_mbuf::packet_type`` to ``0``.
-  If application doesn't call ``rte_eth_dev_set_supported_ptypes`` PMD can
-  return ``rte_mbuf::packet_type`` with ``rte_eth_dev_get_supported_ptypes``.
-  If application is interested only in L2/L3 layer, it can inform the PMD
-  to update ``rte_mbuf::packet_type`` with L2/L3 ptype by calling
-  ``rte_eth_dev_set_supported_ptypes(ethdev_id, RTE_PTYPE_L2_MASK | RTE_PTYPE_L3_MASK)``.
-  This scheme will allow PMDs to avoid lookup to internal ptype table on Rx and
-  thereby improve Rx performance if application wishes do so.
-
-* ethdev: New 32-bit fields may be added for maximum LRO session size, in
-  struct ``rte_eth_dev_info`` for the port capability and in struct
-  ``rte_eth_rxmode`` for the port configuration.
 
 * cryptodev: support for using IV with all sizes is added, J0 still can
   be used but only when IV length in following structs ``rte_crypto_auth_xform``,

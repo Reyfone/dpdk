@@ -97,6 +97,10 @@
 /* Maximum size of burst for vectorized Rx. */
 #define MLX5_VPMD_RX_MAX_BURST 64U
 
+/* Recommended optimal burst size. */
+#define MLX5_RX_DEFAULT_BURST 64U
+#define MLX5_TX_DEFAULT_BURST 64U
+
 /* Number of packets vectorized Rx can simultaneously process in a loop. */
 #define MLX5_VPMD_DESCS_PER_LOOP      4
 
@@ -123,6 +127,22 @@
 #define MLX5_UAR_PAGE_NUM_MAX 64
 #define MLX5_UAR_PAGE_NUM_MASK ((MLX5_UAR_PAGE_NUM_MAX) - 1)
 
+/* Fields of memory mapping type in offset parameter of mmap() */
+#define MLX5_UAR_MMAP_CMD_SHIFT 8
+#define MLX5_UAR_MMAP_CMD_MASK 0xff
+
+/* Environment variable to control the doorbell register mapping. */
+#define MLX5_SHUT_UP_BF "MLX5_SHUT_UP_BF"
+#if defined(RTE_ARCH_ARM64)
+#define MLX5_SHUT_UP_BF_DEFAULT "0"
+#else
+#define MLX5_SHUT_UP_BF_DEFAULT "1"
+#endif
+
+#ifndef HAVE_MLX5DV_MMAP_GET_NC_PAGES_CMD
+#define MLX5_MMAP_GET_NC_PAGES_CMD 3
+#endif
+
 /* Log 2 of the default number of strides per WQE for Multi-Packet RQ. */
 #define MLX5_MPRQ_STRIDE_NUM_N 6U
 
@@ -140,6 +160,21 @@
 
 /* Cache size of mempool for Multi-Packet RQ. */
 #define MLX5_MPRQ_MP_CACHE_SZ 32U
+
+/* MLX5_DV_XMETA_EN supported values. */
+#define MLX5_XMETA_MODE_LEGACY 0
+#define MLX5_XMETA_MODE_META16 1
+#define MLX5_XMETA_MODE_META32 2
+
+/* MLX5_TX_DB_NC supported values. */
+#define MLX5_TXDB_CACHED 0
+#define MLX5_TXDB_NCACHED 1
+#define MLX5_TXDB_HEURISTIC 2
+
+/* Size of the simple hash table for metadata register table. */
+#define MLX5_FLOW_MREG_HTABLE_SZ 4096
+#define MLX5_FLOW_MREG_HNAME "MARK_COPY_TABLE"
+#define MLX5_DEFAULT_COPY_ID UINT32_MAX
 
 /* Definition of static_assert found in /usr/include/assert.h */
 #ifndef HAVE_STATIC_ASSERT

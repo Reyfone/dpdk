@@ -99,6 +99,9 @@
  * in tx burst routine at the moment of freeing multiple mbufs.
  */
 #define MLX5_EMPW_MAX_PACKETS MLX5_TX_COMP_THRESH
+#define MLX5_MPW_MAX_PACKETS 6
+#define MLX5_MPW_INLINE_MAX_PACKETS 2
+
 /*
  * Default packet length threshold to be inlined with
  * ordinary SEND. Inlining saves the MR key search
@@ -225,6 +228,9 @@
 
 /* Default mark value used when none is provided. */
 #define MLX5_FLOW_MARK_DEFAULT 0xffffff
+
+/* Default mark mask for metadata legacy mode. */
+#define MLX5_FLOW_MARK_MASK 0xffffff
 
 /* Maximum number of DS in WQE. Limited by 6-bit field. */
 #define MLX5_DSEG_MAX 63
@@ -354,12 +360,14 @@ struct mlx5_cqe {
 	uint16_t hdr_type_etc;
 	uint16_t vlan_info;
 	uint8_t lro_num_seg;
-	uint8_t rsvd3[11];
+	uint8_t rsvd3[3];
+	uint32_t flow_table_metadata;
+	uint8_t rsvd4[4];
 	uint32_t byte_cnt;
 	uint64_t timestamp;
 	uint32_t sop_drop_qpn;
 	uint16_t wqe_counter;
-	uint8_t rsvd4;
+	uint8_t rsvd5;
 	uint8_t op_own;
 };
 
@@ -383,14 +391,16 @@ struct mlx5_cqe {
 /* CQE format value. */
 #define MLX5_COMPRESSED 0x3
 
-/* Write a specific data value to a field. */
-#define MLX5_MODIFICATION_TYPE_SET 1
-
-/* Add a specific data value to a field. */
-#define MLX5_MODIFICATION_TYPE_ADD 2
+/* Action type of header modification. */
+enum {
+	MLX5_MODIFICATION_TYPE_SET = 0x1,
+	MLX5_MODIFICATION_TYPE_ADD = 0x2,
+	MLX5_MODIFICATION_TYPE_COPY = 0x3,
+};
 
 /* The field of packet to be modified. */
 enum mlx5_modification_field {
+	MLX5_MODI_OUT_NONE = -1,
 	MLX5_MODI_OUT_SMAC_47_16 = 1,
 	MLX5_MODI_OUT_SMAC_15_0,
 	MLX5_MODI_OUT_ETHERTYPE,
@@ -454,6 +464,23 @@ enum mlx5_modification_field {
 	MLX5_MODI_IN_TCP_ACK_NUM = 0x5C,
 };
 
+/* Total number of metadata reg_c's. */
+#define MLX5_MREG_C_NUM (MLX5_MODI_META_REG_C_7 - MLX5_MODI_META_REG_C_0 + 1)
+
+enum modify_reg {
+	REG_NONE = 0,
+	REG_A,
+	REG_B,
+	REG_C_0,
+	REG_C_1,
+	REG_C_2,
+	REG_C_3,
+	REG_C_4,
+	REG_C_5,
+	REG_C_6,
+	REG_C_7,
+};
+
 /* Modification sub command. */
 struct mlx5_modification_cmd {
 	union {
@@ -470,6 +497,13 @@ struct mlx5_modification_cmd {
 	union {
 		uint32_t data1;
 		uint8_t data[4];
+		struct {
+			unsigned int rsvd2:8;
+			unsigned int dst_offset:5;
+			unsigned int rsvd3:3;
+			unsigned int dst_field:12;
+			unsigned int rsvd4:4;
+		};
 	};
 };
 
@@ -1714,6 +1748,38 @@ struct mlx5_ifc_create_sq_in_bits {
 	struct mlx5_ifc_sqc_bits ctx;
 };
 
+enum {
+	MLX5_FLOW_METER_OBJ_MODIFY_FIELD_ACTIVE = (1ULL << 0),
+	MLX5_FLOW_METER_OBJ_MODIFY_FIELD_CBS = (1ULL << 1),
+	MLX5_FLOW_METER_OBJ_MODIFY_FIELD_CIR = (1ULL << 2),
+	MLX5_FLOW_METER_OBJ_MODIFY_FIELD_EBS = (1ULL << 3),
+	MLX5_FLOW_METER_OBJ_MODIFY_FIELD_EIR = (1ULL << 4),
+};
+
+struct mlx5_ifc_flow_meter_parameters_bits {
+	u8         valid[0x1];			// 00h
+	u8         bucket_overflow[0x1];
+	u8         start_color[0x2];
+	u8         both_buckets_on_green[0x1];
+	u8         meter_mode[0x2];
+	u8         reserved_at_1[0x19];
+	u8         reserved_at_2[0x20]; //04h
+	u8         reserved_at_3[0x3];
+	u8         cbs_exponent[0x5];		// 08h
+	u8         cbs_mantissa[0x8];
+	u8         reserved_at_4[0x3];
+	u8         cir_exponent[0x5];
+	u8         cir_mantissa[0x8];
+	u8         reserved_at_5[0x20];		// 0Ch
+	u8         reserved_at_6[0x3];
+	u8         ebs_exponent[0x5];		// 10h
+	u8         ebs_mantissa[0x8];
+	u8         reserved_at_7[0x3];
+	u8         eir_exponent[0x5];
+	u8         eir_mantissa[0x8];
+	u8         reserved_at_8[0x60];		// 14h-1Ch
+};
+
 /* CQE format mask. */
 #define MLX5E_CQE_FORMAT_MASK 0xc
 
@@ -1736,6 +1802,19 @@ struct mlx5_mini_cqe8 {
 	};
 	uint32_t byte_cnt;
 };
+
+/* srTCM PRM flow meter parameters. */
+enum {
+	MLX5_FLOW_COLOR_RED = 0,
+	MLX5_FLOW_COLOR_YELLOW,
+	MLX5_FLOW_COLOR_GREEN,
+	MLX5_FLOW_COLOR_UNDEFINED,
+};
+
+/* Maximum value of srTCM metering parameters. */
+#define MLX5_SRTCM_CBS_MAX (0xFF * (1ULL << 0x1F))
+#define MLX5_SRTCM_CIR_MAX (8 * (1ULL << 30) * 0xFF)
+#define MLX5_SRTCM_EBS_MAX 0
 
 /**
  * Convert a user mark to flow mark.

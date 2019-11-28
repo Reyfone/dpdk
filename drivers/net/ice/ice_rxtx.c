@@ -5,6 +5,7 @@
 #include <rte_ethdev_driver.h>
 #include <rte_net.h>
 
+#include "rte_pmd_ice.h"
 #include "ice_rxtx.h"
 
 #define ICE_TX_CKSUM_OFFLOAD_MASK (		 \
@@ -13,18 +14,36 @@
 		PKT_TX_TCP_SEG |		 \
 		PKT_TX_OUTER_IP_CKSUM)
 
-static inline uint8_t
-ice_rxdid_to_proto_xtr_type(uint8_t rxdid)
-{
-	static uint8_t xtr_map[] = {
-		[ICE_RXDID_COMMS_AUX_VLAN]      = PROTO_XTR_VLAN,
-		[ICE_RXDID_COMMS_AUX_IPV4]      = PROTO_XTR_IPV4,
-		[ICE_RXDID_COMMS_AUX_IPV6]      = PROTO_XTR_IPV6,
-		[ICE_RXDID_COMMS_AUX_IPV6_FLOW] = PROTO_XTR_IPV6_FLOW,
-		[ICE_RXDID_COMMS_AUX_TCP]       = PROTO_XTR_TCP,
-	};
+/* Offset of mbuf dynamic field for protocol extraction data */
+int rte_net_ice_dynfield_proto_xtr_metadata_offs = -1;
 
-	return rxdid < RTE_DIM(xtr_map) ? xtr_map[rxdid] : PROTO_XTR_NONE;
+/* Mask of mbuf dynamic flags for protocol extraction type */
+uint64_t rte_net_ice_dynflag_proto_xtr_vlan_mask;
+uint64_t rte_net_ice_dynflag_proto_xtr_ipv4_mask;
+uint64_t rte_net_ice_dynflag_proto_xtr_ipv6_mask;
+uint64_t rte_net_ice_dynflag_proto_xtr_ipv6_flow_mask;
+uint64_t rte_net_ice_dynflag_proto_xtr_tcp_mask;
+
+static inline uint64_t
+ice_rxdid_to_proto_xtr_ol_flag(uint8_t rxdid)
+{
+	static uint64_t *ol_flag_map[] = {
+		[ICE_RXDID_COMMS_AUX_VLAN] =
+				&rte_net_ice_dynflag_proto_xtr_vlan_mask,
+		[ICE_RXDID_COMMS_AUX_IPV4] =
+				&rte_net_ice_dynflag_proto_xtr_ipv4_mask,
+		[ICE_RXDID_COMMS_AUX_IPV6] =
+				&rte_net_ice_dynflag_proto_xtr_ipv6_mask,
+		[ICE_RXDID_COMMS_AUX_IPV6_FLOW] =
+				&rte_net_ice_dynflag_proto_xtr_ipv6_flow_mask,
+		[ICE_RXDID_COMMS_AUX_TCP] =
+				&rte_net_ice_dynflag_proto_xtr_tcp_mask,
+	};
+	uint64_t *ol_flag;
+
+	ol_flag = rxdid < RTE_DIM(ol_flag_map) ? ol_flag_map[rxdid] : NULL;
+
+	return ol_flag != NULL ? *ol_flag : 0ULL;
 }
 
 static inline uint8_t
@@ -516,7 +535,7 @@ ice_fdir_program_hw_rx_queue(struct ice_rx_queue *rxq)
 {
 	struct ice_vsi *vsi = rxq->vsi;
 	struct ice_hw *hw = ICE_VSI_TO_HW(vsi);
-	uint32_t rxdid = ICE_RXDID_COMMS_GENERIC;
+	uint32_t rxdid = ICE_RXDID_LEGACY_1;
 	struct ice_rlan_ctx rx_ctx;
 	enum ice_status err;
 	uint32_t regval;
@@ -531,9 +550,7 @@ ice_fdir_program_hw_rx_queue(struct ice_rx_queue *rxq)
 	rx_ctx.dbuf = rxq->rx_buf_len >> ICE_RLAN_CTX_DBUF_S;
 	rx_ctx.hbuf = rxq->rx_hdr_len >> ICE_RLAN_CTX_HBUF_S;
 	rx_ctx.dtype = 0; /* No Header Split mode */
-#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
 	rx_ctx.dsize = 1; /* 32B descriptors */
-#endif
 	rx_ctx.rxmax = RTE_ETHER_MAX_LEN;
 	/* TPH: Transaction Layer Packet (TLP) processing hints */
 	rx_ctx.tphrdesc_ena = 1;
@@ -1325,9 +1342,37 @@ ice_rxd_to_vlan_tci(struct rte_mbuf *mb, volatile union ice_rx_flex_desc *rxdp)
 		   mb->vlan_tci, mb->vlan_tci_outer);
 }
 
+#ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
 #define ICE_RX_PROTO_XTR_VALID \
 	((1 << ICE_RX_FLEX_DESC_STATUS1_XTRMD4_VALID_S) | \
 	 (1 << ICE_RX_FLEX_DESC_STATUS1_XTRMD5_VALID_S))
+
+static void
+ice_rxd_to_proto_xtr(struct rte_mbuf *mb,
+		     volatile struct ice_32b_rx_flex_desc_comms *desc)
+{
+	uint16_t stat_err = rte_le_to_cpu_16(desc->status_error1);
+	uint32_t metadata;
+	uint64_t ol_flag;
+
+	if (unlikely(!(stat_err & ICE_RX_PROTO_XTR_VALID)))
+		return;
+
+	ol_flag = ice_rxdid_to_proto_xtr_ol_flag(desc->rxdid);
+	if (unlikely(!ol_flag))
+		return;
+
+	mb->ol_flags |= ol_flag;
+
+	metadata = stat_err & (1 << ICE_RX_FLEX_DESC_STATUS1_XTRMD4_VALID_S) ?
+				rte_le_to_cpu_16(desc->flex_ts.flex.aux0) : 0;
+
+	if (likely(stat_err & (1 << ICE_RX_FLEX_DESC_STATUS1_XTRMD5_VALID_S)))
+		metadata |= rte_le_to_cpu_16(desc->flex_ts.flex.aux1) << 16;
+
+	*RTE_NET_ICE_DYNF_PROTO_XTR_METADATA(mb) = metadata;
+}
+#endif
 
 static inline void
 ice_rxd_to_pkt_fields(struct rte_mbuf *mb,
@@ -1344,28 +1389,13 @@ ice_rxd_to_pkt_fields(struct rte_mbuf *mb,
 	}
 
 #ifndef RTE_LIBRTE_ICE_16BYTE_RX_DESC
-	init_proto_xtr_flds(mb);
-
-	stat_err = rte_le_to_cpu_16(desc->status_error1);
-	if (stat_err & ICE_RX_PROTO_XTR_VALID) {
-		struct proto_xtr_flds *xtr = get_proto_xtr_flds(mb);
-
-		if (stat_err & (1 << ICE_RX_FLEX_DESC_STATUS1_XTRMD4_VALID_S))
-			xtr->u.raw.data0 =
-				rte_le_to_cpu_16(desc->flex_ts.flex.aux0);
-
-		if (stat_err & (1 << ICE_RX_FLEX_DESC_STATUS1_XTRMD5_VALID_S))
-			xtr->u.raw.data1 =
-				rte_le_to_cpu_16(desc->flex_ts.flex.aux1);
-
-		xtr->type = ice_rxdid_to_proto_xtr_type(desc->rxdid);
-		xtr->magic = PROTO_XTR_MAGIC_ID;
-	}
-
 	if (desc->flow_id != 0xFFFFFFFF) {
 		mb->ol_flags |= PKT_RX_FDIR | PKT_RX_FDIR_ID;
 		mb->hash.fdir.hi = rte_le_to_cpu_32(desc->flow_id);
 	}
+
+	if (unlikely(rte_net_ice_dynf_proto_xtr_metadata_avail()))
+		ice_rxd_to_proto_xtr(mb, desc);
 #endif
 }
 
@@ -2045,7 +2075,7 @@ ice_fdir_setup_rx_resources(struct ice_pf *pf)
 	}
 
 	/* Allocate RX hardware ring descriptors. */
-	ring_size = sizeof(union ice_rx_flex_desc) * ICE_FDIR_NUM_RX_DESC;
+	ring_size = sizeof(union ice_32byte_rx_desc) * ICE_FDIR_NUM_RX_DESC;
 	ring_size = RTE_ALIGN(ring_size, ICE_DMA_MEM_ALIGN);
 
 	rz = rte_eth_dma_zone_reserve(dev, "fdir_rx_ring",
@@ -2064,7 +2094,7 @@ ice_fdir_setup_rx_resources(struct ice_pf *pf)
 
 	rxq->rx_ring_dma = rz->iova;
 	memset(rz->addr, 0, ICE_FDIR_NUM_RX_DESC *
-	       sizeof(union ice_rx_flex_desc));
+	       sizeof(union ice_32byte_rx_desc));
 	rxq->rx_ring = (union ice_rx_flex_desc *)rz->addr;
 
 	/*
@@ -3575,12 +3605,81 @@ ice_set_default_ptype_table(struct rte_eth_dev *dev)
 		ad->ptype_tbl[i] = ice_get_default_pkt_type(i);
 }
 
+#define ICE_RX_PROG_STATUS_DESC_WB_QW1_PROGID_S	1
+#define ICE_RX_PROG_STATUS_DESC_WB_QW1_PROGID_M	\
+			(0x3UL << ICE_RX_PROG_STATUS_DESC_WB_QW1_PROGID_S)
+#define ICE_RX_PROG_STATUS_DESC_WB_QW1_PROG_ADD 0
+#define ICE_RX_PROG_STATUS_DESC_WB_QW1_PROG_DEL 0x1
+
+#define ICE_RX_PROG_STATUS_DESC_WB_QW1_FAIL_S	4
+#define ICE_RX_PROG_STATUS_DESC_WB_QW1_FAIL_M	\
+	(1 << ICE_RX_PROG_STATUS_DESC_WB_QW1_FAIL_S)
+#define ICE_RX_PROG_STATUS_DESC_WB_QW1_FAIL_PROF_S	5
+#define ICE_RX_PROG_STATUS_DESC_WB_QW1_FAIL_PROF_M	\
+	(1 << ICE_RX_PROG_STATUS_DESC_WB_QW1_FAIL_PROF_S)
+
+/*
+ * check the programming status descriptor in rx queue.
+ * done after Programming Flow Director is programmed on
+ * tx queue
+ */
+static inline int
+ice_check_fdir_programming_status(struct ice_rx_queue *rxq)
+{
+	volatile union ice_32byte_rx_desc *rxdp;
+	uint64_t qword1;
+	uint32_t rx_status;
+	uint32_t error;
+	uint32_t id;
+	int ret = -EAGAIN;
+
+	rxdp = (volatile union ice_32byte_rx_desc *)
+		(&rxq->rx_ring[rxq->rx_tail]);
+	qword1 = rte_le_to_cpu_64(rxdp->wb.qword1.status_error_len);
+	rx_status = (qword1 & ICE_RXD_QW1_STATUS_M)
+			>> ICE_RXD_QW1_STATUS_S;
+
+	if (rx_status & (1 << ICE_RX_DESC_STATUS_DD_S)) {
+		ret = 0;
+		error = (qword1 & ICE_RX_PROG_STATUS_DESC_WB_QW1_FAIL_M) >>
+			ICE_RX_PROG_STATUS_DESC_WB_QW1_FAIL_S;
+		id = (qword1 & ICE_RX_PROG_STATUS_DESC_WB_QW1_PROGID_M) >>
+			ICE_RX_PROG_STATUS_DESC_WB_QW1_PROGID_S;
+		if (error) {
+			if (id == ICE_RX_PROG_STATUS_DESC_WB_QW1_PROG_ADD)
+				PMD_DRV_LOG(ERR, "Failed to add FDIR rule.");
+			else if (id == ICE_RX_PROG_STATUS_DESC_WB_QW1_PROG_DEL)
+				PMD_DRV_LOG(ERR, "Failed to remove FDIR rule.");
+			ret = -EINVAL;
+			goto err;
+		}
+		error = (qword1 & ICE_RX_PROG_STATUS_DESC_WB_QW1_FAIL_PROF_M) >>
+			ICE_RX_PROG_STATUS_DESC_WB_QW1_FAIL_PROF_S;
+		if (error) {
+			PMD_DRV_LOG(ERR, "Failed to create FDIR profile.");
+			ret = -EINVAL;
+		}
+err:
+		rxdp->wb.qword1.status_error_len = 0;
+		rxq->rx_tail++;
+		if (unlikely(rxq->rx_tail == rxq->nb_rx_desc))
+			rxq->rx_tail = 0;
+		if (rxq->rx_tail == 0)
+			ICE_PCI_REG_WRITE(rxq->qrx_tail, rxq->nb_rx_desc - 1);
+		else
+			ICE_PCI_REG_WRITE(rxq->qrx_tail, rxq->rx_tail - 1);
+	}
+
+	return ret;
+}
+
 #define ICE_FDIR_MAX_WAIT_US 10000
 
 int
 ice_fdir_programming(struct ice_pf *pf, struct ice_fltr_desc *fdir_desc)
 {
 	struct ice_tx_queue *txq = pf->fdir.txq;
+	struct ice_rx_queue *rxq = pf->fdir.rxq;
 	volatile struct ice_fltr_desc *fdirdp;
 	volatile struct ice_tx_desc *txdp;
 	uint32_t td_cmd;
@@ -3618,5 +3717,19 @@ ice_fdir_programming(struct ice_pf *pf, struct ice_fltr_desc *fdir_desc)
 		return -ETIMEDOUT;
 	}
 
-	return 0;
+	for (; i < ICE_FDIR_MAX_WAIT_US; i++) {
+		int ret;
+
+		ret = ice_check_fdir_programming_status(rxq);
+		if (ret == -EAGAIN)
+			rte_delay_us(1);
+		else
+			return ret;
+	}
+
+	PMD_DRV_LOG(ERR,
+		    "Failed to program FDIR filter: programming status reported.");
+	return -ETIMEDOUT;
+
+
 }

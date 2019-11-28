@@ -84,6 +84,10 @@ M: Marko Kovacevic <marko.kovacevic@intel.com>
 F: README
 F: doc/
 
+ABI Policy
+M: Ray Kinsella <mdr@ashroe.eu>
+F: doc/guides/contributing/abi_*.rst
+
 Developers and Maintainers Tools
 M: Thomas Monjalon <thomas@monjalon.net>
 F: MAINTAINERS
@@ -141,8 +145,11 @@ F: lib/librte_eal/common/include/rte_function_versioning.h
 F: doc/guides/rel_notes/deprecation.rst
 F: devtools/validate-abi.sh
 F: devtools/check-symbol-change.sh
+F: buildtools/check-abi-version.sh
 F: buildtools/check-experimental-syms.sh
 F: buildtools/map-list-symbol.sh
+F: buildtools/update-abi.sh
+F: buildtools/update_version_map_abi.py
 
 Driver information
 M: Neil Horman <nhorman@tuxdriver.com>
@@ -767,7 +774,8 @@ F: doc/guides/nics/nfb.rst
 F: doc/guides/nics/features/nfb.ini
 
 Netronome nfp
-M: Alejandro Lucero <alejandro.lucero@netronome.com>
+M: Heinrich Kuhn <heinrich.kuhn@netronome.com>
+M: Jan Gutter <jan.gutter@netronome.com>
 F: drivers/net/nfp/
 F: doc/guides/nics/nfp.rst
 F: doc/guides/nics/features/nfp*.ini
@@ -839,6 +847,8 @@ F: lib/librte_vhost/
 F: doc/guides/prog_guide/vhost_lib.rst
 F: examples/vhost/
 F: doc/guides/sample_app_ug/vhost.rst
+F: examples/vhost_blk/
+F: doc/guides/sample_app_ug/vhost_blk.rst
 F: examples/vhost_crypto/
 F: examples/vdpa/
 F: doc/guides/sample_app_ug/vdpa.rst
@@ -862,7 +872,7 @@ F: doc/guides/nics/virtio.rst
 F: doc/guides/nics/features/virtio*.ini
 
 Wind River AVP
-M: Allain Legacy <allain.legacy@windriver.com>
+M: Steven Webster <steven.webster@windriver.com>
 M: Matt Peters <matt.peters@windriver.com>
 F: drivers/net/avp/
 F: doc/guides/nics/avp.rst
@@ -931,7 +941,7 @@ F: doc/guides/cryptodevs/ccp.rst
 F: doc/guides/cryptodevs/features/ccp.ini
 
 ARMv8 Crypto
-M: Jerin Jacob <jerinj@marvell.com>
+M: Ruifeng Wang <ruifeng.wang@arm.com>
 F: drivers/crypto/armv8/
 F: doc/guides/cryptodevs/armv8.rst
 F: doc/guides/cryptodevs/features/armv8.ini
@@ -1136,6 +1146,7 @@ Rawdev Drivers
 Intel FPGA
 M: Rosen Xu <rosen.xu@intel.com>
 M: Tianfei zhang <tianfei.zhang@intel.com>
+T: git://dpdk.org/next/dpdk-next-net-intel
 F: drivers/raw/ifpga/
 F: doc/guides/rawdevs/ifpga.rst
 
@@ -1520,6 +1531,7 @@ M: John McNamara <john.mcnamara@intel.com>
 F: examples/performance-thread/
 F: doc/guides/sample_app_ug/performance_thread.rst
 
+M: Kirill Rybalchenko <kirill.rybalchenko@intel.com>
 F: examples/ptpclient/
 
 M: Bruce Richardson <bruce.richardson@intel.com>

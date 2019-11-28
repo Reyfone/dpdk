@@ -33,7 +33,7 @@ If you type a partial command and hit ``<TAB>`` you get a list of the available 
 
 .. note::
 
-   Some examples in this document are too long to fit on one line are are shown wrapped at `"\\"` for display purposes::
+   Some examples in this document are too long to fit on one line are shown wrapped at `"\\"` for display purposes::
 
       testpmd> set flow_ctrl rx (on|off) tx (on|off) (high_water) (low_water) \
                (pause_time) (send_xon) (port_id)
@@ -479,6 +479,13 @@ show port supported ptypes
 Show ptypes supported for a specific port::
 
    testpmd> show port (port_id) ptypes
+
+set port supported ptypes
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+set packet types classification for a specific port::
+
+   testpmd> set port (port_id) ptypes_mask (mask)
 
 show device info
 ~~~~~~~~~~~~~~~~
@@ -1680,7 +1687,7 @@ Enable or disable a per port Rx offloading on all Rx queues of a port::
                   vlan_strip, ipv4_cksum, udp_cksum, tcp_cksum, tcp_lro,
                   qinq_strip, outer_ipv4_cksum, macsec_strip,
                   header_split, vlan_filter, vlan_extend, jumbo_frame,
-                  scatter, timestamp, security, keep_crc
+                  scatter, timestamp, security, keep_crc, rss_hash
 
 This command should be run when the port is stopped, or else it will fail.
 
@@ -1711,8 +1718,7 @@ Enable or disable a per port Tx offloading on all Tx queues of a port::
                   sctp_cksum, tcp_tso, udp_tso, outer_ipv4_cksum,
                   qinq_insert, vxlan_tnl_tso, gre_tnl_tso,
                   ipip_tnl_tso, geneve_tnl_tso, macsec_insert,
-                  mt_lockfree, multi_segs, mbuf_fast_free, security,
-                  match_metadata
+                  mt_lockfree, multi_segs, mbuf_fast_free, security
 
 This command should be run when the port is stopped, or else it will fail.
 
@@ -2146,6 +2152,15 @@ Set the maximum packet length::
    testpmd> port config all max-pkt-len (value)
 
 This is equivalent to the ``--max-pkt-len`` command-line option.
+
+port config - max-lro-pkt-size
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Set the maximum LRO aggregated packet size::
+
+   testpmd> port config all max-lro-pkt-size (value)
+
+This is equivalent to the ``--max-lro-pkt-size`` command-line option.
 
 port config - Drop Packets
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2744,7 +2759,7 @@ Traffic Management
 ------------------
 
 The following section shows functions for configuring traffic management on
-on the ethernet device through the use of generic TM API.
+the ethernet device through the use of generic TM API.
 
 show port traffic management capability
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

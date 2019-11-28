@@ -891,6 +891,8 @@ eth_igb_dev_init(struct rte_eth_dev *eth_dev)
 	/* enable support intr */
 	igb_intr_enable(eth_dev);
 
+	eth_igb_dev_set_link_down(eth_dev);
+
 	/* initialize filter info */
 	memset(filter_info, 0,
 	       sizeof(struct e1000_filter_info));
@@ -1181,6 +1183,9 @@ eth_igb_configure(struct rte_eth_dev *dev)
 	int ret;
 
 	PMD_INIT_FUNC_TRACE();
+
+	if (dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG)
+		dev->data->dev_conf.rxmode.offloads |= DEV_RX_OFFLOAD_RSS_HASH;
 
 	/* multipe queue mode checking */
 	ret  = igb_check_mq_mode(dev);
@@ -3256,6 +3261,9 @@ igbvf_dev_configure(struct rte_eth_dev *dev)
 
 	PMD_INIT_LOG(DEBUG, "Configured Virtual Function port id: %d",
 		     dev->data->port_id);
+
+	if (dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG)
+		dev->data->dev_conf.rxmode.offloads |= DEV_RX_OFFLOAD_RSS_HASH;
 
 	/*
 	 * VF has no ability to enable/disable HW CRC

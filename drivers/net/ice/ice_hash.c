@@ -41,6 +41,11 @@ struct rss_meta {
 	uint8_t hash_function;
 };
 
+struct ice_hash_flow_cfg {
+	bool simple_xor;
+	struct ice_rss_cfg rss_cfg;
+};
+
 static int
 ice_hash_init(struct ice_adapter *ad);
 
@@ -115,22 +120,22 @@ static struct ice_pattern_match_item ice_hash_pattern_list_os[] = {
 
 /* Supported pattern for comms package. */
 static struct ice_pattern_match_item ice_hash_pattern_list_comms[] = {
-	{pattern_eth_ipv4,		 ICE_INSET_NONE,  &hint_1},
-	{pattern_eth_ipv4_udp,		 ICE_INSET_NONE,  &hint_2},
-	{pattern_eth_ipv4_tcp,		 ICE_INSET_NONE,  &hint_3},
-	{pattern_eth_ipv4_sctp,		 ICE_INSET_NONE,  &hint_4},
-	{pattern_eth_ipv6,		 ICE_INSET_NONE,  &hint_5},
-	{pattern_eth_ipv6_udp,		 ICE_INSET_NONE,  &hint_6},
-	{pattern_eth_ipv6_tcp,		 ICE_INSET_NONE,  &hint_7},
-	{pattern_eth_ipv6_sctp,		 ICE_INSET_NONE,  &hint_8},
-	{pattern_empty,			 ICE_INSET_NONE,  &hint_0},
-	{pattern_eth_ipv4_gtpu_ipv4,	 ICE_INSET_NONE,  &hint_9},
-	{pattern_eth_ipv4_gtpu_ipv4_udp, ICE_INSET_NONE,  &hint_9},
-	{pattern_eth_ipv4_gtpu_ipv4_tcp, ICE_INSET_NONE,  &hint_9},
-	{pattern_eth_pppoes_ipv4,	 ICE_INSET_NONE,  &hint_10},
-	{pattern_eth_pppoes_ipv4_udp,	 ICE_INSET_NONE,  &hint_11},
-	{pattern_eth_pppoes_ipv4_tcp,	 ICE_INSET_NONE,  &hint_12},
-	{pattern_eth_pppoes_ipv4_sctp,	 ICE_INSET_NONE,  &hint_13},
+	{pattern_eth_ipv4,		    ICE_INSET_NONE,  &hint_1},
+	{pattern_eth_ipv4_udp,		    ICE_INSET_NONE,  &hint_2},
+	{pattern_eth_ipv4_tcp,		    ICE_INSET_NONE,  &hint_3},
+	{pattern_eth_ipv4_sctp,		    ICE_INSET_NONE,  &hint_4},
+	{pattern_eth_ipv6,		    ICE_INSET_NONE,  &hint_5},
+	{pattern_eth_ipv6_udp,		    ICE_INSET_NONE,  &hint_6},
+	{pattern_eth_ipv6_tcp,		    ICE_INSET_NONE,  &hint_7},
+	{pattern_eth_ipv6_sctp,		    ICE_INSET_NONE,  &hint_8},
+	{pattern_empty,			    ICE_INSET_NONE,  &hint_0},
+	{pattern_eth_ipv4_gtpu_eh_ipv4,	    ICE_INSET_NONE,  &hint_9},
+	{pattern_eth_ipv4_gtpu_eh_ipv4_udp, ICE_INSET_NONE,  &hint_9},
+	{pattern_eth_ipv4_gtpu_eh_ipv4_tcp, ICE_INSET_NONE,  &hint_9},
+	{pattern_eth_pppoes_ipv4,	    ICE_INSET_NONE,  &hint_10},
+	{pattern_eth_pppoes_ipv4_udp,	    ICE_INSET_NONE,  &hint_11},
+	{pattern_eth_pppoes_ipv4_tcp,	    ICE_INSET_NONE,  &hint_12},
+	{pattern_eth_pppoes_ipv4_sctp,	    ICE_INSET_NONE,  &hint_13},
 };
 
 /**
@@ -242,6 +247,8 @@ ice_hash_init(struct ice_adapter *ad)
 		parser = &ice_hash_parser_os;
 	else if (ad->active_pkg_type == ICE_PKG_TYPE_COMMS)
 		parser = &ice_hash_parser_comms;
+	else
+		return -EINVAL;
 
 	return ice_register_parser(parser, ad);
 }
@@ -450,14 +457,14 @@ ice_hash_create(struct ice_adapter *ad,
 	struct ice_vsi *vsi = pf->main_vsi;
 	int ret;
 	uint32_t reg;
-	struct ice_rss_cfg *filter_ptr;
+	struct ice_hash_flow_cfg *filter_ptr;
 
 	uint32_t headermask = ((struct rss_meta *)meta)->pkt_hdr;
 	uint64_t hash_field = ((struct rss_meta *)meta)->hash_flds;
 	uint8_t hash_function = ((struct rss_meta *)meta)->hash_function;
 
 	filter_ptr = rte_zmalloc("ice_rss_filter",
-				sizeof(struct ice_rss_cfg), 0);
+				sizeof(struct ice_hash_flow_cfg), 0);
 	if (!filter_ptr) {
 		rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
@@ -472,19 +479,20 @@ ice_hash_create(struct ice_adapter *ad,
 			(2 << VSIQF_HASH_CTL_HASH_SCHEME_S);
 		ICE_WRITE_REG(hw, VSIQF_HASH_CTL(vsi->vsi_id), reg);
 
-		filter_ptr->symm = 0;
+		filter_ptr->simple_xor = 1;
 
 		goto out;
-	} else if (hash_function == RTE_ETH_HASH_FUNCTION_SYMMETRIC_TOEPLITZ) {
-		ret = ice_add_rss_cfg(hw, vsi->idx, hash_field, headermask, 1);
-		if (ret) {
-			rte_flow_error_set(error, EINVAL,
-					RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
-					"rss flow create fail");
-			goto error;
-		}
 	} else {
-		ret = ice_add_rss_cfg(hw, vsi->idx, hash_field, headermask, 0);
+		filter_ptr->rss_cfg.packet_hdr = headermask;
+		filter_ptr->rss_cfg.hashed_flds = hash_field;
+		filter_ptr->rss_cfg.symm =
+			(hash_function ==
+				RTE_ETH_HASH_FUNCTION_SYMMETRIC_TOEPLITZ);
+
+		ret = ice_add_rss_cfg(hw, vsi->idx,
+				filter_ptr->rss_cfg.hashed_flds,
+				filter_ptr->rss_cfg.packet_hdr,
+				filter_ptr->rss_cfg.symm);
 		if (ret) {
 			rte_flow_error_set(error, EINVAL,
 					RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
@@ -492,9 +500,6 @@ ice_hash_create(struct ice_adapter *ad,
 			goto error;
 		}
 	}
-
-	filter_ptr->packet_hdr = headermask;
-	filter_ptr->hashed_flds = hash_field;
 
 out:
 	flow->rule = filter_ptr;
@@ -517,19 +522,26 @@ ice_hash_destroy(struct ice_adapter *ad,
 	struct ice_vsi *vsi = pf->main_vsi;
 	int ret;
 	uint32_t reg;
-	struct ice_rss_cfg *filter_ptr;
+	struct ice_hash_flow_cfg *filter_ptr;
 
-	filter_ptr = (struct ice_rss_cfg *)flow->rule;
+	filter_ptr = (struct ice_hash_flow_cfg *)flow->rule;
 
-	if (filter_ptr->symm == 0) {
+	if (filter_ptr->simple_xor == 1) {
 		/* Return to symmetric_toeplitz state. */
 		reg = ICE_READ_REG(hw, VSIQF_HASH_CTL(vsi->vsi_id));
 		reg = (reg & (~VSIQF_HASH_CTL_HASH_SCHEME_M)) |
 			(1 << VSIQF_HASH_CTL_HASH_SCHEME_S);
 		ICE_WRITE_REG(hw, VSIQF_HASH_CTL(vsi->vsi_id), reg);
 	} else {
-		ret = ice_rem_vsi_rss_cfg(hw, vsi->idx);
-		if (ret) {
+		ret = ice_rem_rss_cfg(hw, vsi->idx,
+				filter_ptr->rss_cfg.hashed_flds,
+				filter_ptr->rss_cfg.packet_hdr);
+		/* Fixme: Ignore the error if a rule does not exist.
+		 * Currently a rule for inputset change or symm turn on/off
+		 * will overwrite an exist rule, while application still
+		 * have 2 rte_flow handles.
+		 **/
+		if (ret && ret != ICE_ERR_DOES_NOT_EXIST) {
 			rte_flow_error_set(error, EINVAL,
 					RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
 					"rss flow destroy fail");

@@ -123,7 +123,8 @@ static const struct rte_pci_id bnxt_pci_id_map[] = {
 				     DEV_RX_OFFLOAD_KEEP_CRC | \
 				     DEV_RX_OFFLOAD_VLAN_EXTEND | \
 				     DEV_RX_OFFLOAD_TCP_LRO | \
-				     DEV_RX_OFFLOAD_SCATTER)
+				     DEV_RX_OFFLOAD_SCATTER | \
+				     DEV_RX_OFFLOAD_RSS_HASH)
 
 static int bnxt_vlan_offload_set_op(struct rte_eth_dev *dev, int mask);
 static void bnxt_print_link_info(struct rte_eth_dev *eth_dev);
@@ -504,7 +505,7 @@ static int bnxt_dev_info_get_op(struct rte_eth_dev *eth_dev,
 	if (BNXT_PF(bp))
 		dev_info->max_vfs = pdev->max_vfs;
 
-	max_rx_rings = RTE_MIN(bp->max_rx_rings, bp->max_stat_ctx);
+	max_rx_rings = BNXT_MAX_RINGS(bp);
 	/* For the sake of symmetry, max_rx_queues = max_tx_queues */
 	dev_info->max_rx_queues = max_rx_rings;
 	dev_info->max_tx_queues = max_rx_rings;
@@ -673,6 +674,10 @@ static int bnxt_dev_configure_op(struct rte_eth_dev *eth_dev)
 	bp->rx_cp_nr_rings = bp->rx_nr_rings;
 	bp->tx_cp_nr_rings = bp->tx_nr_rings;
 
+	if (eth_dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG)
+		rx_offloads |= DEV_RX_OFFLOAD_RSS_HASH;
+	eth_dev->data->dev_conf.rxmode.offloads = rx_offloads;
+
 	if (rx_offloads & DEV_RX_OFFLOAD_JUMBO_FRAME) {
 		eth_dev->data->mtu =
 			eth_dev->data->dev_conf.rxmode.max_rx_pkt_len -
@@ -753,6 +758,7 @@ bnxt_receive_function(__rte_unused struct rte_eth_dev *eth_dev)
 		DEV_RX_OFFLOAD_UDP_CKSUM |
 		DEV_RX_OFFLOAD_TCP_CKSUM |
 		DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM |
+		DEV_RX_OFFLOAD_RSS_HASH |
 		DEV_RX_OFFLOAD_VLAN_FILTER))) {
 		PMD_DRV_LOG(INFO, "Using vector mode receive for port %d\n",
 			    eth_dev->data->port_id);
@@ -1020,7 +1026,7 @@ static int bnxt_add_mac_filter(struct bnxt *bp, struct bnxt_vnic_info *vnic,
 	/* Attach requested MAC address to the new l2_filter */
 	STAILQ_FOREACH(filter, &vnic->filter, next) {
 		if (filter->mac_index == index) {
-			PMD_DRV_LOG(ERR,
+			PMD_DRV_LOG(DEBUG,
 				    "MAC addr already existed for pool %d\n",
 				    pool);
 			return 0;
@@ -2063,7 +2069,11 @@ static void
 bnxt_rxq_info_get_op(struct rte_eth_dev *dev, uint16_t queue_id,
 	struct rte_eth_rxq_info *qinfo)
 {
+	struct bnxt *bp = dev->data->dev_private;
 	struct bnxt_rx_queue *rxq;
+
+	if (is_bnxt_in_error(bp))
+		return;
 
 	rxq = dev->data->rx_queues[queue_id];
 
@@ -2080,7 +2090,11 @@ static void
 bnxt_txq_info_get_op(struct rte_eth_dev *dev, uint16_t queue_id,
 	struct rte_eth_txq_info *qinfo)
 {
+	struct bnxt *bp = dev->data->dev_private;
 	struct bnxt_tx_queue *txq;
+
+	if (is_bnxt_in_error(bp))
+		return;
 
 	txq = dev->data->tx_queues[queue_id];
 
@@ -4568,10 +4582,6 @@ static int bnxt_init_fw(struct bnxt *bp)
 	rc = bnxt_hwrm_error_recovery_qcfg(bp);
 	if (rc)
 		bp->flags &= ~BNXT_FLAG_FW_CAP_ERROR_RECOVERY;
-
-	if (mtu >= RTE_ETHER_MIN_MTU && mtu <= BNXT_MAX_MTU &&
-	    mtu != bp->eth_dev->data->mtu)
-		bp->eth_dev->data->mtu = mtu;
 
 	bnxt_hwrm_port_led_qcaps(bp);
 

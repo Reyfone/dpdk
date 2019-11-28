@@ -96,6 +96,12 @@
 #define MLX5_TXQ_MPW_EN "txq_mpw_en"
 
 /*
+ * Device parameter to force doorbell register mapping
+ * to non-cahed region eliminating the extra write memory barrier.
+ */
+#define MLX5_TX_DB_NC "tx_db_nc"
+
+/*
  * Device parameter to include 2 dsegs in the title WQEBB.
  * Deprecated, ignored.
  */
@@ -124,6 +130,9 @@
 
 /* Activate DV flow steering. */
 #define MLX5_DV_FLOW_EN "dv_flow_en"
+
+/* Enable extensive flow metadata support. */
+#define MLX5_DV_XMETA_EN "dv_xmeta_en"
 
 /* Activate Netlink support in VF mode. */
 #define MLX5_VF_NL_EN "vf_nl_en"
@@ -180,6 +189,9 @@ static pthread_mutex_t mlx5_ibv_list_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 #define MLX5_FLOW_MIN_ID_POOL_SIZE 512
 #define MLX5_ID_GENERATION_ARRAY_FACTOR 16
+
+#define MLX5_FLOW_TABLE_HLIST_ARRAY_SIZE 4096
+#define MLX5_TAGS_HLIST_ARRAY_SIZE 8192
 
 /**
  * Allocate ID pool structure.
@@ -418,6 +430,35 @@ mlx5_get_pdn(struct ibv_pd *pd __rte_unused, uint32_t *pdn __rte_unused)
 }
 #endif /* HAVE_IBV_FLOW_DV_SUPPORT */
 
+static int
+mlx5_config_doorbell_mapping_env(const struct mlx5_dev_config *config)
+{
+	char *env;
+	int value;
+
+	assert(rte_eal_process_type() == RTE_PROC_PRIMARY);
+	/* Get environment variable to store. */
+	env = getenv(MLX5_SHUT_UP_BF);
+	value = env ? !!strcmp(env, "0") : MLX5_ARG_UNSET;
+	if (config->dbnc == MLX5_ARG_UNSET)
+		setenv(MLX5_SHUT_UP_BF, MLX5_SHUT_UP_BF_DEFAULT, 1);
+	else
+		setenv(MLX5_SHUT_UP_BF,
+		       config->dbnc == MLX5_TXDB_NCACHED ? "1" : "0", 1);
+	return value;
+}
+
+static void
+mlx5_restore_doorbell_mapping_env(int value)
+{
+	assert(rte_eal_process_type() == RTE_PROC_PRIMARY);
+	/* Restore the original environment variable state. */
+	if (value == MLX5_ARG_UNSET)
+		unsetenv(MLX5_SHUT_UP_BF);
+	else
+		setenv(MLX5_SHUT_UP_BF, value ? "1" : "0", 1);
+}
+
 /**
  * Allocate shared IB device context. If there is multiport device the
  * master and representors will share this context, if there is single
@@ -431,22 +472,26 @@ mlx5_get_pdn(struct ibv_pd *pd __rte_unused, uint32_t *pdn __rte_unused)
  *
  * @param[in] spawn
  *   Pointer to the IB device attributes (name, port, etc).
+ * @param[in] config
+ *   Pointer to device configuration structure.
  *
  * @return
  *   Pointer to mlx5_ibv_shared object on success,
  *   otherwise NULL and rte_errno is set.
  */
 static struct mlx5_ibv_shared *
-mlx5_alloc_shared_ibctx(const struct mlx5_dev_spawn_data *spawn)
+mlx5_alloc_shared_ibctx(const struct mlx5_dev_spawn_data *spawn,
+			const struct mlx5_dev_config *config)
 {
 	struct mlx5_ibv_shared *sh;
+	int dbmap_env;
 	int err = 0;
 	uint32_t i;
 #ifdef HAVE_IBV_FLOW_DV_SUPPORT
 	struct mlx5_devx_tis_attr tis_attr = { 0 };
 #endif
 
-assert(spawn);
+	assert(spawn);
 	/* Secondary process should not create the shared context. */
 	assert(rte_eal_process_type() == RTE_PROC_PRIMARY);
 	pthread_mutex_lock(&mlx5_ibv_list_mutex);
@@ -469,18 +514,32 @@ assert(spawn);
 		rte_errno  = ENOMEM;
 		goto exit;
 	}
+	/*
+	 * Configure environment variable "MLX5_BF_SHUT_UP"
+	 * before the device creation. The rdma_core library
+	 * checks the variable at device creation and
+	 * stores the result internally.
+	 */
+	dbmap_env = mlx5_config_doorbell_mapping_env(config);
 	/* Try to open IB device with DV first, then usual Verbs. */
 	errno = 0;
 	sh->ctx = mlx5_glue->dv_open_device(spawn->ibv_dev);
 	if (sh->ctx) {
 		sh->devx = 1;
 		DRV_LOG(DEBUG, "DevX is supported");
+		/* The device is created, no need for environment. */
+		mlx5_restore_doorbell_mapping_env(dbmap_env);
 	} else {
+		/* The environment variable is still configured. */
 		sh->ctx = mlx5_glue->open_device(spawn->ibv_dev);
-		if (!sh->ctx) {
-			err = errno ? errno : ENODEV;
+		err = errno ? errno : ENODEV;
+		/*
+		 * The environment variable is not needed anymore,
+		 * all device creation attempts are completed.
+		 */
+		mlx5_restore_doorbell_mapping_env(dbmap_env);
+		if (!sh->ctx)
 			goto error;
-		}
 		DRV_LOG(DEBUG, "DevX is NOT supported");
 	}
 	err = mlx5_glue->query_device_ex(sh->ctx, NULL, &sh->device_attr);
@@ -657,6 +716,143 @@ exit:
 }
 
 /**
+ * Destroy table hash list and all the root entries per domain.
+ *
+ * @param[in] priv
+ *   Pointer to the private device data structure.
+ */
+static void
+mlx5_free_table_hash_list(struct mlx5_priv *priv)
+{
+	struct mlx5_ibv_shared *sh = priv->sh;
+	struct mlx5_flow_tbl_data_entry *tbl_data;
+	union mlx5_flow_tbl_key table_key = {
+		{
+			.table_id = 0,
+			.reserved = 0,
+			.domain = 0,
+			.direction = 0,
+		}
+	};
+	struct mlx5_hlist_entry *pos;
+
+	if (!sh->flow_tbls)
+		return;
+	pos = mlx5_hlist_lookup(sh->flow_tbls, table_key.v64);
+	if (pos) {
+		tbl_data = container_of(pos, struct mlx5_flow_tbl_data_entry,
+					entry);
+		assert(tbl_data);
+		mlx5_hlist_remove(sh->flow_tbls, pos);
+		rte_free(tbl_data);
+	}
+	table_key.direction = 1;
+	pos = mlx5_hlist_lookup(sh->flow_tbls, table_key.v64);
+	if (pos) {
+		tbl_data = container_of(pos, struct mlx5_flow_tbl_data_entry,
+					entry);
+		assert(tbl_data);
+		mlx5_hlist_remove(sh->flow_tbls, pos);
+		rte_free(tbl_data);
+	}
+	table_key.direction = 0;
+	table_key.domain = 1;
+	pos = mlx5_hlist_lookup(sh->flow_tbls, table_key.v64);
+	if (pos) {
+		tbl_data = container_of(pos, struct mlx5_flow_tbl_data_entry,
+					entry);
+		assert(tbl_data);
+		mlx5_hlist_remove(sh->flow_tbls, pos);
+		rte_free(tbl_data);
+	}
+	mlx5_hlist_destroy(sh->flow_tbls, NULL, NULL);
+}
+
+/**
+ * Initialize flow table hash list and create the root tables entry
+ * for each domain.
+ *
+ * @param[in] priv
+ *   Pointer to the private device data structure.
+ *
+ * @return
+ *   Zero on success, positive error code otherwise.
+ */
+static int
+mlx5_alloc_table_hash_list(struct mlx5_priv *priv)
+{
+	struct mlx5_ibv_shared *sh = priv->sh;
+	char s[MLX5_HLIST_NAMESIZE];
+	int err = 0;
+
+	assert(sh);
+	snprintf(s, sizeof(s), "%s_flow_table", priv->sh->ibdev_name);
+	sh->flow_tbls = mlx5_hlist_create(s, MLX5_FLOW_TABLE_HLIST_ARRAY_SIZE);
+	if (!sh->flow_tbls) {
+		DRV_LOG(ERR, "flow tables with hash creation failed.\n");
+		err = ENOMEM;
+		return err;
+	}
+#ifndef HAVE_MLX5DV_DR
+	/*
+	 * In case we have not DR support, the zero tables should be created
+	 * because DV expect to see them even if they cannot be created by
+	 * RDMA-CORE.
+	 */
+	union mlx5_flow_tbl_key table_key = {
+		{
+			.table_id = 0,
+			.reserved = 0,
+			.domain = 0,
+			.direction = 0,
+		}
+	};
+	struct mlx5_flow_tbl_data_entry *tbl_data = rte_zmalloc(NULL,
+							  sizeof(*tbl_data), 0);
+
+	if (!tbl_data) {
+		err = ENOMEM;
+		goto error;
+	}
+	tbl_data->entry.key = table_key.v64;
+	err = mlx5_hlist_insert(sh->flow_tbls, &tbl_data->entry);
+	if (err)
+		goto error;
+	rte_atomic32_init(&tbl_data->tbl.refcnt);
+	rte_atomic32_inc(&tbl_data->tbl.refcnt);
+	table_key.direction = 1;
+	tbl_data = rte_zmalloc(NULL, sizeof(*tbl_data), 0);
+	if (!tbl_data) {
+		err = ENOMEM;
+		goto error;
+	}
+	tbl_data->entry.key = table_key.v64;
+	err = mlx5_hlist_insert(sh->flow_tbls, &tbl_data->entry);
+	if (err)
+		goto error;
+	rte_atomic32_init(&tbl_data->tbl.refcnt);
+	rte_atomic32_inc(&tbl_data->tbl.refcnt);
+	table_key.direction = 0;
+	table_key.domain = 1;
+	tbl_data = rte_zmalloc(NULL, sizeof(*tbl_data), 0);
+	if (!tbl_data) {
+		err = ENOMEM;
+		goto error;
+	}
+	tbl_data->entry.key = table_key.v64;
+	err = mlx5_hlist_insert(sh->flow_tbls, &tbl_data->entry);
+	if (err)
+		goto error;
+	rte_atomic32_init(&tbl_data->tbl.refcnt);
+	rte_atomic32_inc(&tbl_data->tbl.refcnt);
+	return err;
+error:
+	mlx5_free_table_hash_list(priv);
+#endif /* HAVE_MLX5DV_DR */
+	return err;
+}
+
+/**
  * Initialize DR related data within private structure.
  * Routine checks the reference counter and does actual
  * resources creation/initialization only if counter is zero.
@@ -670,12 +866,23 @@ exit:
 static int
 mlx5_alloc_shared_dr(struct mlx5_priv *priv)
 {
-#ifdef HAVE_MLX5DV_DR
 	struct mlx5_ibv_shared *sh = priv->sh;
-	int err = 0;
+	char s[MLX5_HLIST_NAMESIZE];
+	int err = mlx5_alloc_table_hash_list(priv);
+
+	if (err)
+		return err;
+	/* Create tags hash list table. */
+	snprintf(s, sizeof(s), "%s_tags", sh->ibdev_name);
+	sh->tag_table = mlx5_hlist_create(s, MLX5_TAGS_HLIST_ARRAY_SIZE);
+	if (!sh->tag_table) {
+		DRV_LOG(ERR, "tags with hash creation failed.\n");
+		err = ENOMEM;
+		goto error;
+	}
+#ifdef HAVE_MLX5DV_DR
 	void *domain;
 
-	assert(sh);
 	if (sh->dv_refcnt) {
 		/* Shared DV/DR structures is already initialized. */
 		sh->dv_refcnt++;
@@ -714,12 +921,12 @@ mlx5_alloc_shared_dr(struct mlx5_priv *priv)
 	}
 #endif
 	sh->pop_vlan_action = mlx5_glue->dr_create_flow_action_pop_vlan();
+#endif /* HAVE_MLX5DV_DR */
 	sh->dv_refcnt++;
 	priv->dr_shared = 1;
 	return 0;
-
 error:
-       /* Rollback the created objects. */
+	/* Rollback the created objects. */
 	if (sh->rx_domain) {
 		mlx5_glue->dr_destroy_domain(sh->rx_domain);
 		sh->rx_domain = NULL;
@@ -740,11 +947,13 @@ error:
 		mlx5_glue->destroy_flow_action(sh->pop_vlan_action);
 		sh->pop_vlan_action = NULL;
 	}
+	if (sh->tag_table) {
+		/* tags should be destroyed with flow before. */
+		mlx5_hlist_destroy(sh->tag_table, NULL, NULL);
+		sh->tag_table = NULL;
+	}
+	mlx5_free_table_hash_list(priv);
 	return err;
-#else
-	(void)priv;
-	return 0;
-#endif
 }
 
 /**
@@ -756,7 +965,6 @@ error:
 static void
 mlx5_free_shared_dr(struct mlx5_priv *priv)
 {
-#ifdef HAVE_MLX5DV_DR
 	struct mlx5_ibv_shared *sh;
 
 	if (!priv->dr_shared)
@@ -764,6 +972,7 @@ mlx5_free_shared_dr(struct mlx5_priv *priv)
 	priv->dr_shared = 0;
 	sh = priv->sh;
 	assert(sh);
+#ifdef HAVE_MLX5DV_DR
 	assert(sh->dv_refcnt);
 	if (sh->dv_refcnt && --sh->dv_refcnt)
 		return;
@@ -790,9 +999,13 @@ mlx5_free_shared_dr(struct mlx5_priv *priv)
 		sh->pop_vlan_action = NULL;
 	}
 	pthread_mutex_destroy(&sh->dv_mutex);
-#else
-	(void)priv;
-#endif
+#endif /* HAVE_MLX5DV_DR */
+	if (sh->tag_table) {
+		/* tags should be destroyed with flow before. */
+		mlx5_hlist_destroy(sh->tag_table, NULL, NULL);
+		sh->tag_table = NULL;
+	}
+	mlx5_free_table_hash_list(priv);
 }
 
 /**
@@ -1013,6 +1226,7 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 	mlx5_dev_interrupt_handler_devx_uninstall(dev);
 	mlx5_traffic_disable(dev);
 	mlx5_flow_flush(dev, NULL);
+	mlx5_flow_meter_flush(dev, NULL);
 	/* Prevent crashes when queues are still in use. */
 	dev->rx_pkt_burst = removed_rx_burst;
 	dev->tx_pkt_burst = removed_tx_burst;
@@ -1036,6 +1250,8 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 		priv->txqs = NULL;
 	}
 	mlx5_proc_priv_uninit(dev);
+	if (priv->mreg_cp_tbl)
+		mlx5_hlist_destroy(priv->mreg_cp_tbl, NULL, NULL);
 	mlx5_mprq_free_mp(dev);
 	mlx5_free_shared_dr(priv);
 	if (priv->rss_conf.rss_key != NULL)
@@ -1168,6 +1384,7 @@ const struct eth_dev_ops mlx5_dev_ops = {
 	.get_module_info = mlx5_get_module_info,
 	.get_module_eeprom = mlx5_get_module_eeprom,
 	.hairpin_cap_get = mlx5_hairpin_cap_get,
+	.mtr_ops_get = mlx5_flow_meter_ops_get,
 };
 
 /* Available operations from secondary process. */
@@ -1231,6 +1448,7 @@ const struct eth_dev_ops mlx5_dev_ops_isolate = {
 	.get_module_info = mlx5_get_module_info,
 	.get_module_eeprom = mlx5_get_module_eeprom,
 	.hairpin_cap_get = mlx5_hairpin_cap_get,
+	.mtr_ops_get = mlx5_flow_meter_ops_get,
 };
 
 /**
@@ -1292,6 +1510,16 @@ mlx5_args_check(const char *key, const char *val, void *opaque)
 		DRV_LOG(WARNING, "%s: deprecated parameter, ignored", key);
 	} else if (strcmp(MLX5_TXQ_MPW_EN, key) == 0) {
 		config->mps = !!tmp;
+	} else if (strcmp(MLX5_TX_DB_NC, key) == 0) {
+		if (tmp != MLX5_TXDB_CACHED &&
+		    tmp != MLX5_TXDB_NCACHED &&
+		    tmp != MLX5_TXDB_HEURISTIC) {
+			DRV_LOG(ERR, "invalid Tx doorbell "
+				     "mapping parameter");
+			rte_errno = EINVAL;
+			return -rte_errno;
+		}
+		config->dbnc = tmp;
 	} else if (strcmp(MLX5_TXQ_MPW_HDR_DSEG_EN, key) == 0) {
 		DRV_LOG(WARNING, "%s: deprecated parameter, ignored", key);
 	} else if (strcmp(MLX5_TXQ_MAX_INLINE_LEN, key) == 0) {
@@ -1310,6 +1538,16 @@ mlx5_args_check(const char *key, const char *val, void *opaque)
 		config->dv_esw_en = !!tmp;
 	} else if (strcmp(MLX5_DV_FLOW_EN, key) == 0) {
 		config->dv_flow_en = !!tmp;
+	} else if (strcmp(MLX5_DV_XMETA_EN, key) == 0) {
+		if (tmp != MLX5_XMETA_MODE_LEGACY &&
+		    tmp != MLX5_XMETA_MODE_META16 &&
+		    tmp != MLX5_XMETA_MODE_META32) {
+			DRV_LOG(ERR, "invalid extensive "
+				     "metadata parameter");
+			rte_errno = EINVAL;
+			return -rte_errno;
+		}
+		config->dv_xmeta_en = tmp;
 	} else if (strcmp(MLX5_MR_EXT_MEMSEG_EN, key) == 0) {
 		config->mr_ext_memseg_en = !!tmp;
 	} else if (strcmp(MLX5_MAX_DUMP_FILES_NUM, key) == 0) {
@@ -1355,12 +1593,14 @@ mlx5_args(struct mlx5_dev_config *config, struct rte_devargs *devargs)
 		MLX5_TXQ_MPW_EN,
 		MLX5_TXQ_MPW_HDR_DSEG_EN,
 		MLX5_TXQ_MAX_INLINE_LEN,
+		MLX5_TX_DB_NC,
 		MLX5_TX_VEC_EN,
 		MLX5_RX_VEC_EN,
 		MLX5_L3_VXLAN_EN,
 		MLX5_VF_NL_EN,
 		MLX5_DV_ESW_EN,
 		MLX5_DV_FLOW_EN,
+		MLX5_DV_XMETA_EN,
 		MLX5_MR_EXT_MEMSEG_EN,
 		MLX5_REPRESENTOR,
 		MLX5_MAX_DUMP_FILES_NUM,
@@ -1570,6 +1810,60 @@ exit:
 }
 
 /**
+ * Configures the metadata mask fields in the shared context.
+ *
+ * @param [in] dev
+ *   Pointer to Ethernet device.
+ */
+static void
+mlx5_set_metadata_mask(struct rte_eth_dev *dev)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_ibv_shared *sh = priv->sh;
+	uint32_t meta, mark, reg_c0;
+
+	reg_c0 = ~priv->vport_meta_mask;
+	switch (priv->config.dv_xmeta_en) {
+	case MLX5_XMETA_MODE_LEGACY:
+		meta = UINT32_MAX;
+		mark = MLX5_FLOW_MARK_MASK;
+		break;
+	case MLX5_XMETA_MODE_META16:
+		meta = reg_c0 >> rte_bsf32(reg_c0);
+		mark = MLX5_FLOW_MARK_MASK;
+		break;
+	case MLX5_XMETA_MODE_META32:
+		meta = UINT32_MAX;
+		mark = (reg_c0 >> rte_bsf32(reg_c0)) & MLX5_FLOW_MARK_MASK;
+		break;
+	default:
+		meta = 0;
+		mark = 0;
+		assert(false);
+		break;
+	}
+	if (sh->dv_mark_mask && sh->dv_mark_mask != mark)
+		DRV_LOG(WARNING, "metadata MARK mask mismatche %08X:%08X",
+				 sh->dv_mark_mask, mark);
+	else
+		sh->dv_mark_mask = mark;
+	if (sh->dv_meta_mask && sh->dv_meta_mask != meta)
+		DRV_LOG(WARNING, "metadata META mask mismatche %08X:%08X",
+				 sh->dv_meta_mask, meta);
+	else
+		sh->dv_meta_mask = meta;
+	if (sh->dv_regc0_mask && sh->dv_regc0_mask != reg_c0)
+		DRV_LOG(WARNING, "metadata reg_c0 mask mismatche %08X:%08X",
+				 sh->dv_meta_mask, reg_c0);
+	else
+		sh->dv_regc0_mask = reg_c0;
+	DRV_LOG(DEBUG, "metadata mode %u", priv->config.dv_xmeta_en);
+	DRV_LOG(DEBUG, "metadata MARK mask %08X", sh->dv_mark_mask);
+	DRV_LOG(DEBUG, "metadata META mask %08X", sh->dv_meta_mask);
+	DRV_LOG(DEBUG, "metadata reg_c0 mask %08X", sh->dv_regc0_mask);
+}
+
+/**
  * Allocate page of door-bells and register it using DevX API.
  *
  * @param [in] dev
@@ -1734,6 +2028,12 @@ mlx5_dev_check_sibling_config(struct mlx5_priv *priv,
 		rte_errno = EINVAL;
 		return rte_errno;
 	}
+	if (sh_conf->dv_xmeta_en ^ config->dv_xmeta_en) {
+		DRV_LOG(ERR, "\"dv_xmeta_en\" configuration mismatch"
+			     " for shared %s context", sh->ibdev_name);
+		rte_errno = EINVAL;
+		return rte_errno;
+	}
 	return 0;
 }
 /**
@@ -1783,7 +2083,7 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	uint16_t port_id;
 	unsigned int i;
 #ifdef HAVE_MLX5DV_DR_DEVX_PORT
-	struct mlx5dv_devx_port devx_port;
+	struct mlx5dv_devx_port devx_port = { .comp_mask = 0 };
 #endif
 
 	/* Determine if this port representor is supposed to be spawned. */
@@ -1859,7 +2159,20 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 		eth_dev->tx_pkt_burst = mlx5_select_tx_function(eth_dev);
 		return eth_dev;
 	}
-	sh = mlx5_alloc_shared_ibctx(spawn);
+	/*
+	 * Some parameters ("tx_db_nc" in particularly) are needed in
+	 * advance to create dv/verbs device context. We proceed the
+	 * devargs here to get ones, and later proceed devargs again
+	 * to override some hardware settings.
+	 */
+	err = mlx5_args(&config, dpdk_dev->devargs);
+	if (err) {
+		err = rte_errno;
+		DRV_LOG(ERR, "failed to process device arguments: %s",
+			strerror(rte_errno));
+		goto error;
+	}
+	sh = mlx5_alloc_shared_ibctx(spawn, &config);
 	if (!sh)
 		return NULL;
 	config.devx = sh->devx;
@@ -1943,7 +2256,9 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 		tunnel_en = ((dv_attr.tunnel_offloads_caps &
 			      MLX5DV_RAW_PACKET_CAP_TUNNELED_OFFLOAD_VXLAN) &&
 			     (dv_attr.tunnel_offloads_caps &
-			      MLX5DV_RAW_PACKET_CAP_TUNNELED_OFFLOAD_GRE));
+			      MLX5DV_RAW_PACKET_CAP_TUNNELED_OFFLOAD_GRE) &&
+			     (dv_attr.tunnel_offloads_caps &
+			      MLX5DV_RAW_PACKET_CAP_TUNNELED_OFFLOAD_GENEVE));
 	}
 	DRV_LOG(DEBUG, "tunnel offloading is %ssupported",
 		tunnel_en ? "" : "not ");
@@ -2015,13 +2330,17 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	 * vport index. The engaged part of metadata register is
 	 * defined by mask.
 	 */
-	devx_port.comp_mask = MLX5DV_DEVX_PORT_VPORT |
-			      MLX5DV_DEVX_PORT_MATCH_REG_C_0;
-	err = mlx5_glue->devx_port_query(sh->ctx, spawn->ibv_port, &devx_port);
-	if (err) {
-		DRV_LOG(WARNING, "can't query devx port %d on device %s",
-			spawn->ibv_port, spawn->ibv_dev->name);
-		devx_port.comp_mask = 0;
+	if (switch_info->representor || switch_info->master) {
+		devx_port.comp_mask = MLX5DV_DEVX_PORT_VPORT |
+				      MLX5DV_DEVX_PORT_MATCH_REG_C_0;
+		err = mlx5_glue->devx_port_query(sh->ctx, spawn->ibv_port,
+						 &devx_port);
+		if (err) {
+			DRV_LOG(WARNING,
+				"can't query devx port %d on device %s",
+				spawn->ibv_port, spawn->ibv_dev->name);
+			devx_port.comp_mask = 0;
+		}
 	}
 	if (devx_port.comp_mask & MLX5DV_DEVX_PORT_MATCH_REG_C_0) {
 		priv->vport_meta_tag = devx_port.reg_c_0.value;
@@ -2040,7 +2359,8 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 			err = ENOTSUP;
 			goto error;
 		}
-	} else if (devx_port.comp_mask & MLX5DV_DEVX_PORT_VPORT) {
+	}
+	if (devx_port.comp_mask & MLX5DV_DEVX_PORT_VPORT) {
 		priv->vport_id = devx_port.vport_num;
 	} else if (spawn->pf_bond >= 0) {
 		DRV_LOG(ERR, "can't deduce vport index for port %d"
@@ -2097,13 +2417,8 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 		}
 		own_domain_id = 1;
 	}
-	err = mlx5_args(&config, dpdk_dev->devargs);
-	if (err) {
-		err = rte_errno;
-		DRV_LOG(ERR, "failed to process device arguments: %s",
-			strerror(rte_errno));
-		goto error;
-	}
+	/* Override some values set by hardware configuration. */
+	mlx5_args(&config, dpdk_dev->devargs);
 	err = mlx5_dev_check_sibling_config(priv, &config);
 	if (err)
 		goto error;
@@ -2115,7 +2430,7 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	!defined(HAVE_IBV_DEVICE_COUNTERS_SET_V45)
 	DRV_LOG(DEBUG, "counters are not supported");
 #endif
-#ifndef HAVE_IBV_FLOW_DV_SUPPORT
+#if !defined(HAVE_IBV_FLOW_DV_SUPPORT) || !defined(HAVE_MLX5DV_DR)
 	if (config.dv_flow_en) {
 		DRV_LOG(WARNING, "DV flow is not supported");
 		config.dv_flow_en = 0;
@@ -2166,7 +2481,8 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	else
 		config.mps = config.mps ? mps : MLX5_MPW_DISABLED;
 	DRV_LOG(INFO, "%sMPS is %s",
-		config.mps == MLX5_MPW_ENHANCED ? "enhanced " : "",
+		config.mps == MLX5_MPW_ENHANCED ? "enhanced " :
+		config.mps == MLX5_MPW ? "legacy " : "",
 		config.mps != MLX5_MPW_DISABLED ? "enabled" : "disabled");
 	if (config.cqe_comp && !cqe_comp) {
 		DRV_LOG(WARNING, "Rx CQE compression isn't supported");
@@ -2208,6 +2524,30 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 			DRV_LOG(DEBUG, "LRO session timeout set to %d usec",
 				config.lro.timeout);
 		}
+#if defined(HAVE_MLX5DV_DR) && defined(HAVE_MLX5_DR_CREATE_ACTION_FLOW_METER)
+		if (config.hca_attr.qos.sup && config.hca_attr.qos.srtcm_sup &&
+		    config.dv_flow_en) {
+			uint8_t reg_c_mask =
+				config.hca_attr.qos.flow_meter_reg_c_ids;
+			/*
+			 * Meter needs two REG_C's for color match and pre-sfx
+			 * flow match. Here get the REG_C for color match.
+			 * REG_C_0 and REG_C_1 is reserved for metadata feature.
+			 */
+			reg_c_mask &= 0xfc;
+			if (__builtin_popcount(reg_c_mask) < 1) {
+				priv->mtr_en = 0;
+				DRV_LOG(WARNING, "No available register for"
+					" meter.");
+			} else {
+				priv->mtr_color_reg = ffs(reg_c_mask) - 1 +
+						      REG_C_0;
+				priv->mtr_en = 1;
+				DRV_LOG(DEBUG, "The REG_C meter uses is %d",
+					priv->mtr_color_reg);
+			}
+		}
+#endif
 	}
 	if (config.mprq.enabled && mprq) {
 		if (config.mprq.stride_num_n > mprq_max_stride_num_n ||
@@ -2297,6 +2637,8 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 		mlx5_nl_mac_addr_sync(eth_dev);
 	TAILQ_INIT(&priv->flows);
 	TAILQ_INIT(&priv->ctrl_flows);
+	TAILQ_INIT(&priv->flow_meters);
+	TAILQ_INIT(&priv->flow_meter_profiles);
 	/* Hint libmlx5 to use PMD allocator for data plane resources */
 	struct mlx5dv_ctx_allocators alctr = {
 		.alloc = &mlx5_alloc_verbs_buf,
@@ -2333,6 +2675,12 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 		err = mlx5_alloc_shared_dr(priv);
 		if (err)
 			goto error;
+		priv->qrss_id_pool = mlx5_flow_id_pool_alloc();
+		if (!priv->qrss_id_pool) {
+			DRV_LOG(ERR, "can't create flow id pool");
+			err = ENOMEM;
+			goto error;
+		}
 	}
 	/* Supported Verbs flow priority number detection. */
 	err = mlx5_flow_discover_priorities(eth_dev);
@@ -2341,9 +2689,55 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 		goto error;
 	}
 	priv->config.flow_prio = err;
+	if (!priv->config.dv_esw_en &&
+	    priv->config.dv_xmeta_en != MLX5_XMETA_MODE_LEGACY) {
+		DRV_LOG(WARNING, "metadata mode %u is not supported "
+				 "(no E-Switch)", priv->config.dv_xmeta_en);
+		priv->config.dv_xmeta_en = MLX5_XMETA_MODE_LEGACY;
+	}
+	mlx5_set_metadata_mask(eth_dev);
+	if (priv->config.dv_xmeta_en != MLX5_XMETA_MODE_LEGACY &&
+	    !priv->sh->dv_regc0_mask) {
+		DRV_LOG(ERR, "metadata mode %u is not supported "
+			     "(no metadata reg_c[0] is available)",
+			     priv->config.dv_xmeta_en);
+			err = ENOTSUP;
+			goto error;
+	}
+	/* Query availibility of metadata reg_c's. */
+	err = mlx5_flow_discover_mreg_c(eth_dev);
+	if (err < 0) {
+		err = -err;
+		goto error;
+	}
+	if (!mlx5_flow_ext_mreg_supported(eth_dev)) {
+		DRV_LOG(DEBUG,
+			"port %u extensive metadata register is not supported",
+			eth_dev->data->port_id);
+		if (priv->config.dv_xmeta_en != MLX5_XMETA_MODE_LEGACY) {
+			DRV_LOG(ERR, "metadata mode %u is not supported "
+				     "(no metadata registers available)",
+				     priv->config.dv_xmeta_en);
+			err = ENOTSUP;
+			goto error;
+		}
+	}
+	if (priv->config.dv_flow_en &&
+	    priv->config.dv_xmeta_en != MLX5_XMETA_MODE_LEGACY &&
+	    mlx5_flow_ext_mreg_supported(eth_dev) &&
+	    priv->sh->dv_regc0_mask) {
+		priv->mreg_cp_tbl = mlx5_hlist_create(MLX5_FLOW_MREG_HNAME,
+						      MLX5_FLOW_MREG_HTABLE_SZ);
+		if (!priv->mreg_cp_tbl) {
+			err = ENOMEM;
+			goto error;
+		}
+	}
 	return eth_dev;
 error:
 	if (priv) {
+		if (priv->mreg_cp_tbl)
+			mlx5_hlist_destroy(priv->mreg_cp_tbl, NULL, NULL);
 		if (priv->sh)
 			mlx5_free_shared_dr(priv);
 		if (priv->nl_socket_route >= 0)
@@ -2352,6 +2746,8 @@ error:
 			close(priv->nl_socket_rdma);
 		if (priv->vmwa_context)
 			mlx5_vlan_vmwa_exit(priv->vmwa_context);
+		if (priv->qrss_id_pool)
+			mlx5_flow_id_pool_release(priv->qrss_id_pool);
 		if (own_domain_id)
 			claim_zero(rte_eth_switch_domain_free(priv->domain_id));
 		rte_free(priv);
@@ -2868,6 +3264,7 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	dev_config = (struct mlx5_dev_config){
 		.hw_padding = 0,
 		.mps = MLX5_ARG_UNSET,
+		.dbnc = MLX5_ARG_UNSET,
 		.rx_vec_en = 1,
 		.txq_inline_max = MLX5_ARG_UNSET,
 		.txq_inline_min = MLX5_ARG_UNSET,
@@ -2882,6 +3279,7 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 			.min_rxqs_num = MLX5_MPRQ_MIN_RXQS,
 		},
 		.dv_esw_en = 1,
+		.dv_flow_en = 1,
 	};
 	/* Device specific configuration. */
 	switch (pci_dev->id.device_id) {

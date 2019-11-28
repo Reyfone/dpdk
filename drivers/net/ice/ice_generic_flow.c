@@ -1039,11 +1039,19 @@ enum rte_flow_item_type pattern_eth_ipv4_gtpu_ipv4[] = {
 	RTE_FLOW_ITEM_TYPE_IPV4,
 	RTE_FLOW_ITEM_TYPE_UDP,
 	RTE_FLOW_ITEM_TYPE_GTPU,
+	RTE_FLOW_ITEM_TYPE_IPV4,
+	RTE_FLOW_ITEM_TYPE_END,
+};
+enum rte_flow_item_type pattern_eth_ipv4_gtpu_eh_ipv4[] = {
+	RTE_FLOW_ITEM_TYPE_ETH,
+	RTE_FLOW_ITEM_TYPE_IPV4,
+	RTE_FLOW_ITEM_TYPE_UDP,
+	RTE_FLOW_ITEM_TYPE_GTPU,
 	RTE_FLOW_ITEM_TYPE_GTP_PSC,
 	RTE_FLOW_ITEM_TYPE_IPV4,
 	RTE_FLOW_ITEM_TYPE_END,
 };
-enum rte_flow_item_type pattern_eth_ipv4_gtpu_ipv4_udp[] = {
+enum rte_flow_item_type pattern_eth_ipv4_gtpu_eh_ipv4_udp[] = {
 	RTE_FLOW_ITEM_TYPE_ETH,
 	RTE_FLOW_ITEM_TYPE_IPV4,
 	RTE_FLOW_ITEM_TYPE_UDP,
@@ -1053,7 +1061,7 @@ enum rte_flow_item_type pattern_eth_ipv4_gtpu_ipv4_udp[] = {
 	RTE_FLOW_ITEM_TYPE_UDP,
 	RTE_FLOW_ITEM_TYPE_END,
 };
-enum rte_flow_item_type pattern_eth_ipv4_gtpu_ipv4_tcp[] = {
+enum rte_flow_item_type pattern_eth_ipv4_gtpu_eh_ipv4_tcp[] = {
 	RTE_FLOW_ITEM_TYPE_ETH,
 	RTE_FLOW_ITEM_TYPE_IPV4,
 	RTE_FLOW_ITEM_TYPE_UDP,
@@ -1064,7 +1072,7 @@ enum rte_flow_item_type pattern_eth_ipv4_gtpu_ipv4_tcp[] = {
 	RTE_FLOW_ITEM_TYPE_END,
 
 };
-enum rte_flow_item_type pattern_eth_ipv4_gtpu_ipv4_icmp[] = {
+enum rte_flow_item_type pattern_eth_ipv4_gtpu_eh_ipv4_icmp[] = {
 	RTE_FLOW_ITEM_TYPE_ETH,
 	RTE_FLOW_ITEM_TYPE_IPV4,
 	RTE_FLOW_ITEM_TYPE_UDP,
@@ -1698,6 +1706,8 @@ ice_parse_engine_create(struct ice_adapter *ad,
 	void *temp;
 
 	TAILQ_FOREACH_SAFE(parser_node, parser_list, node, temp) {
+		int ret;
+
 		if (parser_node->parser->parse_pattern_action(ad,
 				parser_node->parser->array,
 				parser_node->parser->array_len,
@@ -1712,8 +1722,11 @@ ice_parse_engine_create(struct ice_adapter *ad,
 			continue;
 		}
 
-		if (!(engine->create(ad, flow, *meta, error)))
+		ret = engine->create(ad, flow, *meta, error);
+		if (ret == 0)
 			return engine;
+		else if (ret == -EEXIST)
+			return NULL;
 	}
 	return NULL;
 }

@@ -207,6 +207,8 @@ Limitations
   - KEEP_CRC offload cannot be supported with LRO.
   - The first mbuf length, without head-room,  must be big enough to include the
     TCP header (122B).
+  - Rx queue with LRO offload enabled, receiving a non-LRO packet, can forward
+    it with size limited to max LRO size, not to max RX packet length.
 
 Statistics
 ----------
@@ -552,6 +554,39 @@ Run-time configuration
   Also, if minimal data inlining is requested by non-zero ``txq_inline_min``
   option or reported by the NIC, the eMPW feature is disengaged.
 
+- ``tx_db_nc`` parameter [int]
+
+  The rdma core library can map doorbell register in two ways, depending on the
+  environment variable "MLX5_SHUT_UP_BF":
+
+  - As regular cached memory, if the variable is either missing or set to zero.
+  - As non-cached memory, if the variable is present and set to not "0" value.
+
+  The type of mapping may slightly affect the Tx performance, the optimal choice
+  is strongly relied on the host architecture and should be deduced practically.
+
+  If ``tx_db_nc`` is set to zero, the doorbell is forced to be mapped to regular
+  memory, the PMD will perform the extra write memory barrier after writing to
+  doorbell, it might increase the needed CPU clocks per packet to send, but
+  latency might be improved.
+
+  If ``tx_db_nc`` is set to one, the doorbell is forced to be mapped to non
+  cached memory, the PMD will not perform the extra write memory barrier
+  after writing to doorbell, on some architectures it might improve the
+  performance.
+
+  If ``tx_db_nc`` is set to two, the doorbell is forced to be mapped to regular
+  memory, the PMD will use heuristics to decide whether write memory barrier
+  should be performed. For bursts with size multiple of recommended one (64 pkts)
+  it is supposed the next burst is coming and no need to issue the extra memory
+  barrier (it is supposed to be issued in the next coming burst, at least after
+  descriptor writing). It might increase latency (on some hosts till next
+  packets transmit) and should be used with care.
+
+  If ``tx_db_nc`` is omitted or set to zero, the preset (if any) environment
+  variable "MLX5_SHUT_UP_BF" value is used. If there is no "MLX5_SHUT_UP_BF",
+  the default ``tx_db_nc`` value is zero for ARM64 hosts and one for others.
+
 - ``tx_vec_en`` parameter [int]
 
   A nonzero value enables Tx vector on ConnectX-5, ConnectX-6, ConnectX-6 DX
@@ -582,12 +617,65 @@ Run-time configuration
 
   Disabled by default.
 
+- ``dv_xmeta_en`` parameter [int]
+
+  A nonzero value enables extensive flow metadata support if device is
+  capable and driver supports it. This can enable extensive support of
+  ``MARK`` and ``META`` item of ``rte_flow``. The newly introduced
+  ``SET_TAG`` and ``SET_META`` actions do not depend on ``dv_xmeta_en``.
+
+  There are some possible configurations, depending on parameter value:
+
+  - 0, this is default value, defines the legacy mode, the ``MARK`` and
+    ``META`` related actions and items operate only within NIC Tx and
+    NIC Rx steering domains, no ``MARK`` and ``META`` information crosses
+    the domain boundaries. The ``MARK`` item is 24 bits wide, the ``META``
+    item is 32 bits wide and match supported on egress only.
+
+  - 1, this engages extensive metadata mode, the ``MARK`` and ``META``
+    related actions and items operate within all supported steering domains,
+    including FDB, ``MARK`` and ``META`` information may cross the domain
+    boundaries. The ``MARK`` item is 24 bits wide, the ``META`` item width
+    depends on kernel and firmware configurations and might be 0, 16 or
+    32 bits. Within NIC Tx domain ``META`` data width is 32 bits for
+    compatibility, the actual width of data transferred to the FDB domain
+    depends on kernel configuration and may be vary. The actual supported
+    width can be retrieved in runtime by series of rte_flow_validate()
+    trials.
+
+  - 2, this engages extensive metadata mode, the ``MARK`` and ``META``
+    related actions and items operate within all supported steering domains,
+    including FDB, ``MARK`` and ``META`` information may cross the domain
+    boundaries. The ``META`` item is 32 bits wide, the ``MARK`` item width
+    depends on kernel and firmware configurations and might be 0, 16 or
+    24 bits. The actual supported width can be retrieved in runtime by
+    series of rte_flow_validate() trials.
+
+  +------+-----------+-----------+-------------+-------------+
+  | Mode | ``MARK``  | ``META``  | ``META`` Tx | FDB/Through |
+  +======+===========+===========+=============+=============+
+  | 0    | 24 bits   | 32 bits   | 32 bits     | no          |
+  +------+-----------+-----------+-------------+-------------+
+  | 1    | 24 bits   | vary 0-32 | 32 bits     | yes         |
+  +------+-----------+-----------+-------------+-------------+
+  | 2    | vary 0-32 | 32 bits   | 32 bits     | yes         |
+  +------+-----------+-----------+-------------+-------------+
+
+  If there is no E-Switch configuration the ``dv_xmeta_en`` parameter is
+  ignored and the device is configured to operate in legacy mode (0).
+
+  Disabled by default (set to 0).
+
+  The Direct Verbs/Rules (engaged with ``dv_flow_en`` = 1) supports all
+  of the extensive metadata features. The legacy Verbs supports FLAG and
+  MARK metadata actions over NIC Rx steering domain only.
+
 - ``dv_flow_en`` parameter [int]
 
   A nonzero value enables the DV flow steering assuming it is supported
-  by the driver.
+  by the driver (RDMA Core library version is rdma-core-24.0 or higher).
 
-  Disabled by default.
+  Enabled by default if supported.
 
 - ``dv_esw_en`` parameter [int]
 

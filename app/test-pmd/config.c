@@ -238,6 +238,10 @@ nic_xstats_display(portid_t port_id)
 	int cnt_xstats, idx_xstat;
 	struct rte_eth_xstat_name *xstats_names;
 
+	if (port_id_is_invalid(port_id, ENABLED_WARN)) {
+		print_valid_ports();
+		return;
+	}
 	printf("###### NIC extended statistics for port %-2d\n", port_id);
 	if (!rte_eth_dev_is_valid_port(port_id)) {
 		printf("Error: Invalid port number %i\n", port_id);
@@ -295,6 +299,10 @@ nic_xstats_clear(portid_t port_id)
 {
 	int ret;
 
+	if (port_id_is_invalid(port_id, ENABLED_WARN)) {
+		print_valid_ports();
+		return;
+	}
 	ret = rte_eth_xstats_reset(port_id);
 	if (ret != 0) {
 		printf("%s: Error: failed to reset xstats (port %u): %s",
@@ -616,6 +624,8 @@ port_infos_display(portid_t port_id)
 	printf("Minimum size of RX buffer: %u\n", dev_info.min_rx_bufsize);
 	printf("Maximum configurable length of RX packet: %u\n",
 		dev_info.max_rx_pktlen);
+	printf("Maximum configurable size of LRO aggregated packet: %u\n",
+		dev_info.max_lro_pkt_size);
 	if (dev_info.max_vfs)
 		printf("Maximum number of VFs: %u\n", dev_info.max_vfs);
 	if (dev_info.max_vmdq_pools)

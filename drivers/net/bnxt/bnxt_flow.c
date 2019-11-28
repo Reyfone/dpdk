@@ -177,14 +177,6 @@ bnxt_validate_and_parse_flow_type(struct bnxt *bp,
 			return -rte_errno;
 		}
 
-		if (!item->spec || !item->mask) {
-			rte_flow_error_set(error, EINVAL,
-					   RTE_FLOW_ERROR_TYPE_ITEM,
-					   item,
-					   "spec/mask is NULL");
-			return -rte_errno;
-		}
-
 		switch (item->type) {
 		case RTE_FLOW_ITEM_TYPE_ANY:
 			inner =
@@ -1093,9 +1085,7 @@ bnxt_validate_and_parse_flow(struct rte_eth_dev *dev,
 		    vnic->fw_vnic_id != INVALID_HW_RING_ID)
 			goto use_vnic;
 
-		if (!rxq ||
-		    bp->vnic_info[0].fw_grp_ids[act_q->index] !=
-		    INVALID_HW_RING_ID) {
+		if (!rxq) {
 			PMD_DRV_LOG(ERR,
 				    "Queue invalid or used with other VNIC\n");
 			rte_flow_error_set(error,

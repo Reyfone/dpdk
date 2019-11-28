@@ -122,8 +122,8 @@
 	DEV_TX_OFFLOAD_MT_LOCKFREE	| \
 	DEV_TX_OFFLOAD_VLAN_INSERT	| \
 	DEV_TX_OFFLOAD_QINQ_INSERT	| \
-	DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM | \
-	DEV_TX_OFFLOAD_OUTER_UDP_CKSUM  | \
+	DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM	| \
+	DEV_TX_OFFLOAD_OUTER_UDP_CKSUM	| \
 	DEV_TX_OFFLOAD_TCP_CKSUM	| \
 	DEV_TX_OFFLOAD_UDP_CKSUM	| \
 	DEV_TX_OFFLOAD_SCTP_CKSUM	| \
@@ -140,11 +140,12 @@
 	DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM | \
 	DEV_RX_OFFLOAD_SCATTER		| \
 	DEV_RX_OFFLOAD_JUMBO_FRAME	| \
-	DEV_RX_OFFLOAD_OUTER_UDP_CKSUM | \
-	DEV_RX_OFFLOAD_VLAN_STRIP | \
-	DEV_RX_OFFLOAD_VLAN_FILTER | \
-	DEV_RX_OFFLOAD_QINQ_STRIP | \
-	DEV_RX_OFFLOAD_TIMESTAMP)
+	DEV_RX_OFFLOAD_OUTER_UDP_CKSUM	| \
+	DEV_RX_OFFLOAD_VLAN_STRIP	| \
+	DEV_RX_OFFLOAD_VLAN_FILTER	| \
+	DEV_RX_OFFLOAD_QINQ_STRIP	| \
+	DEV_RX_OFFLOAD_TIMESTAMP	| \
+	DEV_RX_OFFLOAD_RSS_HASH)
 
 #define NIX_DEFAULT_RSS_CTX_GROUP  0
 #define NIX_DEFAULT_RSS_MCAM_IDX  -1
@@ -275,6 +276,7 @@ struct otx2_eth_dev {
 	uint8_t configured_cints;
 	uint8_t configured_nb_rx_qs;
 	uint8_t configured_nb_tx_qs;
+	uint8_t ptype_disable;
 	uint16_t nix_msixoff;
 	uintptr_t base;
 	uintptr_t lmt_addr;
@@ -389,6 +391,10 @@ void otx2_nix_rxq_info_get(struct rte_eth_dev *eth_dev, uint16_t queue_id,
 			   struct rte_eth_rxq_info *qinfo);
 void otx2_nix_txq_info_get(struct rte_eth_dev *eth_dev, uint16_t queue_id,
 			   struct rte_eth_txq_info *qinfo);
+int otx2_rx_burst_mode_get(struct rte_eth_dev *dev, uint16_t queue_id,
+			   struct rte_eth_burst_mode *mode);
+int otx2_tx_burst_mode_get(struct rte_eth_dev *dev, uint16_t queue_id,
+			   struct rte_eth_burst_mode *mode);
 uint32_t otx2_nix_rx_queue_count(struct rte_eth_dev *eth_dev, uint16_t qidx);
 int otx2_nix_tx_done_cleanup(void *txq, uint32_t free_cnt);
 int otx2_nix_rx_descriptor_done(void *rxq, uint16_t offset);
@@ -526,6 +532,7 @@ void *otx2_nix_fastpath_lookup_mem_get(void);
 
 /* PTYPES */
 const uint32_t *otx2_nix_supported_ptypes_get(struct rte_eth_dev *dev);
+int otx2_nix_ptypes_set(struct rte_eth_dev *eth_dev, uint32_t ptype_mask);
 
 /* Mac address handling */
 int otx2_nix_mac_addr_set(struct rte_eth_dev *eth_dev,
@@ -562,5 +569,6 @@ int otx2_nix_timesync_read_time(struct rte_eth_dev *eth_dev,
 int otx2_eth_dev_ptp_info_update(struct otx2_dev *dev, bool ptp_en);
 int otx2_nix_read_clock(struct rte_eth_dev *eth_dev, uint64_t *time);
 int otx2_nix_raw_clock_tsc_conv(struct otx2_eth_dev *dev);
+void otx2_nix_ptp_enable_vf(struct rte_eth_dev *eth_dev);
 
 #endif /* __OTX2_ETHDEV_H__ */

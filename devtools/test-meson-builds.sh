@@ -36,12 +36,18 @@ fi
 
 default_path=$PATH
 default_pkgpath=$PKG_CONFIG_PATH
+default_cppflags=$CPPFLAGS
+default_cflags=$CFLAGS
+default_ldflags=$LDFLAGS
 
 load_env () # <target compiler>
 {
 	targetcc=$1
 	export PATH=$default_path
 	export PKG_CONFIG_PATH=$default_pkgpath
+	export CPPFLAGS=$default_cppflags
+	export CFLAGS=$default_cflags
+	export LDFLAGS=$default_ldflags
 	unset DPDK_MESON_OPTIONS
 	command -v $targetcc >/dev/null 2>&1 || return 1
 	DPDK_TARGET=$($targetcc -v 2>&1 | sed -n 's,^Target: ,,p')
@@ -117,7 +123,7 @@ export CC="clang"
 build build-arm64-host-clang $c $use_shared \
 	--cross-file $srcdir/config/arm/arm64_armv8_linux_gcc
 # all gcc/arm configurations
-for f in $srcdir/config/arm/arm*gcc ; do
+for f in $srcdir/config/arm/arm64_[bdo]*gcc ; do
 	export CC="$CCACHE gcc"
 	build build-$(basename $f | tr '_' '-' | cut -d'-' -f-2) $c \
 		$use_shared --cross-file $f
@@ -133,7 +139,11 @@ load_env cc
 pc_file=$(find $DESTDIR -name libdpdk.pc)
 export PKG_CONFIG_PATH=$(dirname $pc_file):$PKG_CONFIG_PATH
 
-for example in cmdline helloworld l2fwd l3fwd skeleton timer; do
-	echo "## Building $example"
-	$MAKE -C $DESTDIR/usr/local/share/dpdk/examples/$example clean all
-done
+# if pkg-config defines the necessary flags, test building some examples
+if pkg-config --define-prefix libdpdk >/dev/null 2>&1; then
+	export PKGCONF="pkg-config --define-prefix"
+	for example in cmdline helloworld l2fwd l3fwd skeleton timer; do
+		echo "## Building $example"
+		$MAKE -C $DESTDIR/usr/local/share/dpdk/examples/$example clean all
+	done
+fi

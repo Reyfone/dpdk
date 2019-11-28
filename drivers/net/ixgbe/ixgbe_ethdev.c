@@ -1095,6 +1095,8 @@ eth_ixgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 
 	PMD_INIT_FUNC_TRACE();
 
+	ixgbe_dev_macsec_setting_reset(eth_dev);
+
 	eth_dev->dev_ops = &ixgbe_eth_dev_ops;
 	eth_dev->rx_pkt_burst = &ixgbe_recv_pkts;
 	eth_dev->tx_pkt_burst = &ixgbe_xmit_pkts;
@@ -1188,6 +1190,7 @@ eth_ixgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 	diag = ixgbe_bypass_init_hw(hw);
 #else
 	diag = ixgbe_init_hw(hw);
+	hw->mac.autotry_restart = false;
 #endif /* RTE_LIBRTE_IXGBE_BYPASS */
 
 	/*
@@ -1297,6 +1300,8 @@ eth_ixgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 
 	/* enable support intr */
 	ixgbe_enable_intr(eth_dev);
+
+	ixgbe_dev_set_link_down(eth_dev);
 
 	/* initialize filter info */
 	memset(filter_info, 0,
@@ -1800,12 +1805,14 @@ static int eth_ixgbe_pci_remove(struct rte_pci_device *pci_dev)
 
 	ethdev = rte_eth_dev_allocated(pci_dev->device.name);
 	if (!ethdev)
-		return -ENODEV;
+		return 0;
 
 	if (ethdev->data->dev_flags & RTE_ETH_DEV_REPRESENTOR)
-		return rte_eth_dev_destroy(ethdev, ixgbe_vf_representor_uninit);
+		return rte_eth_dev_pci_generic_remove(pci_dev,
+					ixgbe_vf_representor_uninit);
 	else
-		return rte_eth_dev_destroy(ethdev, eth_ixgbe_dev_uninit);
+		return rte_eth_dev_pci_generic_remove(pci_dev,
+						eth_ixgbe_dev_uninit);
 }
 
 static struct rte_pci_driver rte_ixgbe_pmd = {
@@ -2402,6 +2409,10 @@ ixgbe_dev_configure(struct rte_eth_dev *dev)
 	int ret;
 
 	PMD_INIT_FUNC_TRACE();
+
+	if (dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG)
+		dev->data->dev_conf.rxmode.offloads |= DEV_RX_OFFLOAD_RSS_HASH;
+
 	/* multipe queue mode checking */
 	ret  = ixgbe_check_mq_mode(dev);
 	if (ret != 0) {
@@ -2542,7 +2553,7 @@ ixgbe_dev_start(struct rte_eth_dev *dev)
 	uint32_t *link_speeds;
 	struct ixgbe_tm_conf *tm_conf =
 		IXGBE_DEV_PRIVATE_TO_TM_CONF(dev->data->dev_private);
-	struct ixgbe_macsec_setting *macsec_ctrl =
+	struct ixgbe_macsec_setting *macsec_setting =
 		IXGBE_DEV_PRIVATE_TO_MACSEC_SETTING(dev->data->dev_private);
 
 	PMD_INIT_FUNC_TRACE();
@@ -2796,8 +2807,9 @@ skip_link_setup:
 	 */
 	ixgbe_dev_link_update(dev, 0);
 
-	/* setup the macsec ctrl register */
-	ixgbe_dev_macsec_register_enable(dev, macsec_ctrl);
+	/* setup the macsec setting register */
+	if (macsec_setting->offload_en)
+		ixgbe_dev_macsec_register_enable(dev, macsec_setting);
 
 	return 0;
 
@@ -2829,9 +2841,6 @@ ixgbe_dev_stop(struct rte_eth_dev *dev)
 		return;
 
 	PMD_INIT_FUNC_TRACE();
-
-	/* disable mecsec register */
-	ixgbe_dev_macsec_register_disable(dev);
 
 	rte_eal_alarm_cancel(ixgbe_dev_setup_link_alarm_handler, dev);
 
@@ -5154,6 +5163,9 @@ ixgbevf_dev_configure(struct rte_eth_dev *dev)
 
 	PMD_INIT_LOG(DEBUG, "Configured Virtual Function port id: %d",
 		     dev->data->port_id);
+
+	if (dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG)
+		dev->data->dev_conf.rxmode.offloads |= DEV_RX_OFFLOAD_RSS_HASH;
 
 	/*
 	 * VF has no ability to enable/disable HW CRC
@@ -8838,6 +8850,7 @@ ixgbe_dev_macsec_setting_save(struct rte_eth_dev *dev,
 	struct ixgbe_macsec_setting *macsec =
 		IXGBE_DEV_PRIVATE_TO_MACSEC_SETTING(dev->data->dev_private);
 
+	macsec->offload_en = macsec_setting->offload_en;
 	macsec->encrypt_en = macsec_setting->encrypt_en;
 	macsec->replayprotect_en = macsec_setting->replayprotect_en;
 }
@@ -8848,6 +8861,7 @@ ixgbe_dev_macsec_setting_reset(struct rte_eth_dev *dev)
 	struct ixgbe_macsec_setting *macsec =
 		IXGBE_DEV_PRIVATE_TO_MACSEC_SETTING(dev->data->dev_private);
 
+	macsec->offload_en = 0;
 	macsec->encrypt_en = 0;
 	macsec->replayprotect_en = 0;
 }

@@ -330,7 +330,7 @@ _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_DPAA2_QDMA_RAWDEV) += -lrte_rawdev_dpaa2_qdma
 endif # CONFIG_RTE_LIBRTE_FSLMC_BUS
 _LDLIBS-$(CONFIG_RTE_LIBRTE_IFPGA_BUS)      += -lrte_bus_ifpga
 ifeq ($(CONFIG_RTE_LIBRTE_IFPGA_BUS),y)
-_LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_IFPGA_RAWDEV)   += -lrte_rawdev_ifpga
+_LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_IFPGA_RAWDEV)   += -lrte_rawdev_ifpga -lfdt
 _LDLIBS-$(CONFIG_RTE_LIBRTE_IPN3KE_PMD)       += -lrte_pmd_ipn3ke
 endif # CONFIG_RTE_LIBRTE_IFPGA_BUS
 _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_IOAT_RAWDEV)   += -lrte_rawdev_ioat
@@ -378,10 +378,6 @@ filter-libs = \
 		$(call filter-libs,$(call allbutfirst,$(1)))))
 
 LDLIBS := $(call filter-libs,$(LDLIBS))
-
-ifeq ($(RTE_DEVEL_BUILD)$(CONFIG_RTE_BUILD_SHARED_LIB),yy)
-LDFLAGS += -rpath=$(RTE_SDK_BIN)/lib
-endif
 
 MAPFLAGS = -Map=$@.map --cref
 

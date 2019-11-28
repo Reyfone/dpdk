@@ -698,13 +698,14 @@ static int eth_i40e_pci_remove(struct rte_pci_device *pci_dev)
 
 	ethdev = rte_eth_dev_allocated(pci_dev->device.name);
 	if (!ethdev)
-		return -ENODEV;
-
+		return 0;
 
 	if (ethdev->data->dev_flags & RTE_ETH_DEV_REPRESENTOR)
-		return rte_eth_dev_destroy(ethdev, i40e_vf_representor_uninit);
+		return rte_eth_dev_pci_generic_remove(pci_dev,
+					i40e_vf_representor_uninit);
 	else
-		return rte_eth_dev_destroy(ethdev, eth_i40e_dev_uninit);
+		return rte_eth_dev_pci_generic_remove(pci_dev,
+						eth_i40e_dev_uninit);
 }
 
 static struct rte_pci_driver rte_i40e_pmd = {
@@ -1392,6 +1393,9 @@ eth_i40e_dev_init(struct rte_eth_dev *dev, void *init_params __rte_unused)
 	hw->adapter_stopped = 0;
 	hw->adapter_closed = 0;
 
+	/* Init switch device pointer */
+	hw->switch_dev = NULL;
+
 	/*
 	 * Switch Tag value should not be identical to either the First Tag
 	 * or Second Tag values. So set something other than common Ethertype
@@ -1811,6 +1815,9 @@ i40e_dev_configure(struct rte_eth_dev *dev)
 	ad->rx_vec_allowed = true;
 	ad->tx_simple_allowed = true;
 	ad->tx_vec_allowed = true;
+
+	if (dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG)
+		dev->data->dev_conf.rxmode.offloads |= DEV_RX_OFFLOAD_RSS_HASH;
 
 	/* Only legacy filter API needs the following fdir config. So when the
 	 * legacy filter API is deprecated, the following codes should also be
@@ -2903,6 +2910,9 @@ i40e_dev_link_update(struct rte_eth_dev *dev,
 	else
 		update_link_aq(hw, &link, enable_lse, wait_to_complete);
 
+	if (hw->switch_dev)
+		rte_eth_linkstatus_get(hw->switch_dev, &link);
+
 	ret = rte_eth_linkstatus_set(dev, &link);
 	i40e_notify_all_vfs_link_status(dev);
 
@@ -3613,7 +3623,8 @@ i40e_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		DEV_RX_OFFLOAD_SCATTER |
 		DEV_RX_OFFLOAD_VLAN_EXTEND |
 		DEV_RX_OFFLOAD_VLAN_FILTER |
-		DEV_RX_OFFLOAD_JUMBO_FRAME;
+		DEV_RX_OFFLOAD_JUMBO_FRAME |
+		DEV_RX_OFFLOAD_RSS_HASH;
 
 	dev_info->tx_queue_offload_capa = DEV_TX_OFFLOAD_MBUF_FAST_FREE;
 	dev_info->tx_offload_capa =

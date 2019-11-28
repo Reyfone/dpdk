@@ -395,6 +395,8 @@ struct rte_eth_rxmode {
 	/** The multi-queue packet distribution mode to be used, e.g. RSS. */
 	enum rte_eth_rx_mq_mode mq_mode;
 	uint32_t max_rx_pkt_len;  /**< Only used if JUMBO_FRAME enabled. */
+	/** Maximum allowed size of LRO aggregated packet. */
+	uint32_t max_lro_pkt_size;
 	uint16_t split_hdr_size;  /**< hdr buf size (header_split enabled).*/
 	/**
 	 * Per-port Rx offloads to be set using DEV_RX_OFFLOAD_* flags.
@@ -402,6 +404,9 @@ struct rte_eth_rxmode {
 	 * structure are allowed to be set.
 	 */
 	uint64_t offloads;
+
+	uint64_t reserved_64s[2]; /**< Reserved for future fields */
+	void *reserved_ptrs[2];   /**< Reserved for future fields */
 };
 
 /**
@@ -802,6 +807,9 @@ struct rte_eth_txmode {
 		/**< If set, reject sending out untagged pkts */
 		hw_vlan_insert_pvid : 1;
 		/**< If set, enable port based VLAN insertion */
+
+	uint64_t reserved_64s[2]; /**< Reserved for future fields */
+	void *reserved_ptrs[2];   /**< Reserved for future fields */
 };
 
 /**
@@ -818,6 +826,9 @@ struct rte_eth_rxconf {
 	 * fields on rte_eth_dev_info structure are allowed to be set.
 	 */
 	uint64_t offloads;
+
+	uint64_t reserved_64s[2]; /**< Reserved for future fields */
+	void *reserved_ptrs[2];   /**< Reserved for future fields */
 };
 
 /**
@@ -836,6 +847,9 @@ struct rte_eth_txconf {
 	 * fields on rte_eth_dev_info structure are allowed to be set.
 	 */
 	uint64_t offloads;
+
+	uint64_t reserved_64s[2]; /**< Reserved for future fields */
+	void *reserved_ptrs[2];   /**< Reserved for future fields */
 };
 
 /**
@@ -1088,6 +1102,7 @@ struct rte_eth_conf {
 #define DEV_RX_OFFLOAD_KEEP_CRC		0x00010000
 #define DEV_RX_OFFLOAD_SCTP_CKSUM	0x00020000
 #define DEV_RX_OFFLOAD_OUTER_UDP_CKSUM  0x00040000
+#define DEV_RX_OFFLOAD_RSS_HASH		0x00080000
 
 #define DEV_RX_OFFLOAD_CHECKSUM (DEV_RX_OFFLOAD_IPV4_CKSUM | \
 				 DEV_RX_OFFLOAD_UDP_CKSUM | \
@@ -1218,6 +1233,8 @@ struct rte_eth_dev_info {
 	const uint32_t *dev_flags; /**< Device flags */
 	uint32_t min_rx_bufsize; /**< Minimum size of RX buffer. */
 	uint32_t max_rx_pktlen; /**< Maximum configurable length of RX pkt. */
+	/** Maximum configurable size of LRO aggregated packet. */
+	uint32_t max_lro_pkt_size;
 	uint16_t max_rx_queues; /**< Maximum number of RX queues. */
 	uint16_t max_tx_queues; /**< Maximum number of TX queues. */
 	uint32_t max_mac_addrs; /**< Maximum number of MAC addresses. */
@@ -1260,6 +1277,9 @@ struct rte_eth_dev_info {
 	 * embedded managed interconnect/switch.
 	 */
 	struct rte_eth_switch_info switch_info;
+
+	uint64_t reserved_64s[2]; /**< Reserved for future fields */
+	void *reserved_ptrs[2];   /**< Reserved for future fields */
 };
 
 /**
@@ -2604,6 +2624,42 @@ int rte_eth_dev_fw_version_get(uint16_t port_id,
  */
 int rte_eth_dev_get_supported_ptypes(uint16_t port_id, uint32_t ptype_mask,
 				     uint32_t *ptypes, int num);
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Inform Ethernet device about reduced range of packet types to handle.
+ *
+ * Application can use this function to set only specific ptypes that it's
+ * interested. This information can be used by the PMD to optimize Rx path.
+ *
+ * The function accepts an array `set_ptypes` allocated by the caller to
+ * store the packet types set by the driver, the last element of the array
+ * is set to RTE_PTYPE_UNKNOWN. The size of the `set_ptype` array should be
+ * `rte_eth_dev_get_supported_ptypes() + 1` else it might only be filled
+ * partially.
+ *
+ * @param port_id
+ *   The port identifier of the Ethernet device.
+ * @param ptype_mask
+ *   The ptype family that application is interested in should be bitwise OR of
+ *   RTE_PTYPE_*_MASK or 0.
+ * @param set_ptypes
+ *   An array pointer to store set packet types, allocated by caller. The
+ *   function marks the end of array with RTE_PTYPE_UNKNOWN.
+ * @param num
+ *   Size of the array pointed by param ptypes.
+ *   Should be rte_eth_dev_get_supported_ptypes() + 1 to accommodate the
+ *   set ptypes.
+ * @return
+ *   - (0) if Success.
+ *   - (-ENODEV) if *port_id* invalid.
+ *   - (-EINVAL) if *ptype_mask* is invalid (or) set_ptypes is NULL and
+ *     num > 0.
+ */
+__rte_experimental
+int rte_eth_dev_set_ptypes(uint16_t port_id, uint32_t ptype_mask,
+			   uint32_t *set_ptypes, unsigned int num);
 
 /**
  * Retrieve the MTU of an Ethernet device.

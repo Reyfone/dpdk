@@ -37,6 +37,7 @@
 #include "mlx5_autoconf.h"
 #include "mlx5_defs.h"
 #include "mlx5_glue.h"
+#include "mlx5_prm.h"
 
 enum {
 	PCI_VENDOR_ID_MELLANOX = 0x15b3,
@@ -168,6 +169,17 @@ struct mlx5_devx_mkey_attr {
 	uint32_t pd;
 };
 
+/* HCA qos attributes. */
+struct mlx5_hca_qos_attr {
+	uint32_t sup:1;	/* Whether QOS is supported. */
+	uint32_t srtcm_sup:1; /* Whether srTCM mode is supported. */
+	uint8_t log_max_flow_meter;
+	/* Power of the maximum supported meters. */
+	uint8_t flow_meter_reg_c_ids;
+	/* Bitmap of the reg_Cs available for flow meter to use. */
+
+};
+
 /* HCA supports this number of time periods for LRO. */
 #define MLX5_LRO_NUM_SUPP_PERIODS 4
 
@@ -194,6 +206,7 @@ struct mlx5_hca_attr {
 	uint32_t log_max_hairpin_wq_data_sz:5;
 	uint32_t log_max_hairpin_num_packets:5;
 	uint32_t vhca_id:16;
+	struct mlx5_hca_qos_attr qos;
 };
 
 /* Flow list . */
@@ -204,6 +217,9 @@ TAILQ_HEAD(mlx5_flows, rte_flow);
 
 #define MLX5_LRO_SUPPORTED(dev) \
 	(((struct mlx5_priv *)((dev)->data->dev_private))->config.lro.supported)
+
+/* Maximal size of aggregated LRO packet. */
+#define MLX5_MAX_LRO_SIZE (UINT8_MAX * 256u)
 
 /* LRO configurations structure. */
 struct mlx5_lro_config {
@@ -239,6 +255,7 @@ struct mlx5_dev_config {
 	unsigned int vf_nl_en:1; /* Enable Netlink requests in VF mode. */
 	unsigned int dv_esw_en:1; /* Enable E-Switch DV flow. */
 	unsigned int dv_flow_en:1; /* Enable DV flow. */
+	unsigned int dv_xmeta_en:2; /* Enable extensive flow metadata. */
 	unsigned int swp:1; /* Tx generic tunnel checksum and TSO offload. */
 	unsigned int devx:1; /* Whether devx interface is available or not. */
 	unsigned int dest_tir:1; /* Whether advanced DR API is available. */
@@ -253,7 +270,10 @@ struct mlx5_dev_config {
 		/* Rx queue count threshold to enable MPRQ. */
 	} mprq; /* Configurations for Multi-Packet RQ. */
 	int mps; /* Multi-packet send supported mode. */
+	int dbnc; /* Skip doorbell register write barrier. */
 	unsigned int flow_prio; /* Number of flow priorities. */
+	enum modify_reg flow_mreg_c[MLX5_MREG_C_NUM];
+	/* Availibility of mreg_c's. */
 	unsigned int tso_max_payload_sz; /* Maximum TCP payload for TSO. */
 	unsigned int ind_table_max_size; /* Maximum indirection table size. */
 	unsigned int max_dump_files_num; /* Maximum dump files per queue. */
@@ -555,6 +575,18 @@ struct mlx5_ibv_shared_port {
 	 */
 };
 
+/* Table key of the hash organization. */
+union mlx5_flow_tbl_key {
+	struct {
+		/* Table ID should be at the lowest address. */
+		uint32_t table_id;	/**< ID of the table. */
+		uint16_t reserved;	/**< must be zero for comparison. */
+		uint8_t domain;		/**< 1 - FDB, 0 - NIC TX/RX. */
+		uint8_t direction;	/**< 1 - egress, 0 - ingress. */
+	};
+	uint64_t v64;			/**< full 64bits value of key */
+};
+
 /* Table structure. */
 struct mlx5_flow_tbl_resource {
 	void *obj; /**< Pointer to DR table object. */
@@ -562,7 +594,14 @@ struct mlx5_flow_tbl_resource {
 };
 
 #define MLX5_MAX_TABLES UINT16_MAX
+#define MLX5_FLOW_TABLE_LEVEL_METER (UINT16_MAX - 3)
+#define MLX5_FLOW_TABLE_LEVEL_SUFFIX (UINT16_MAX - 2)
 #define MLX5_HAIRPIN_TX_TABLE (UINT16_MAX - 1)
+/* Reserve the last two tables for metadata register copy. */
+#define MLX5_FLOW_MREG_ACT_TABLE_GROUP (MLX5_MAX_TABLES - 1)
+#define MLX5_FLOW_MREG_CP_TABLE_GROUP (MLX5_MAX_TABLES - 2)
+/* Tables for metering splits should be added here. */
+#define MLX5_MAX_TABLES_EXTERNAL (MLX5_MAX_TABLES - 3)
 #define MLX5_MAX_TABLES_FDB UINT16_MAX
 
 #define MLX5_DBR_PAGE_SIZE 4096 /* Must be >= 512. */
@@ -616,24 +655,26 @@ struct mlx5_ibv_shared {
 	} mr;
 	/* Shared DV/DR flow data section. */
 	pthread_mutex_t dv_mutex; /* DV context mutex. */
+	uint32_t dv_meta_mask; /* flow META metadata supported mask. */
+	uint32_t dv_mark_mask; /* flow MARK metadata supported mask. */
+	uint32_t dv_regc0_mask; /* available bits of metatada reg_c[0]. */
 	uint32_t dv_refcnt; /* DV/DR data reference counter. */
 	void *fdb_domain; /* FDB Direct Rules name space handle. */
-	struct mlx5_flow_tbl_resource fdb_tbl[MLX5_MAX_TABLES_FDB];
-	/* FDB Direct Rules tables. */
+	struct mlx5_flow_tbl_resource *fdb_mtr_sfx_tbl;
+	/* FDB meter suffix rules table. */
 	void *rx_domain; /* RX Direct Rules name space handle. */
-	struct mlx5_flow_tbl_resource rx_tbl[MLX5_MAX_TABLES];
-	/* RX Direct Rules tables. */
+	struct mlx5_flow_tbl_resource *rx_mtr_sfx_tbl;
+	/* RX meter suffix rules table. */
 	void *tx_domain; /* TX Direct Rules name space handle. */
-	struct mlx5_flow_tbl_resource tx_tbl[MLX5_MAX_TABLES];
-	/* TX Direct Rules tables. */
+	struct mlx5_flow_tbl_resource *tx_mtr_sfx_tbl;
+	/* TX meter suffix rules table. */
+	struct mlx5_hlist *flow_tbls;
+	/* Direct Rules tables for FDB, NIC TX+RX */
 	void *esw_drop_action; /* Pointer to DR E-Switch drop action. */
 	void *pop_vlan_action; /* Pointer to DR pop VLAN action. */
-	/* TX Direct Rules tables/ */
-	LIST_HEAD(matchers, mlx5_flow_dv_matcher) matchers;
 	LIST_HEAD(encap_decap, mlx5_flow_dv_encap_decap_resource) encaps_decaps;
 	LIST_HEAD(modify_cmd, mlx5_flow_dv_modify_hdr_resource) modify_cmds;
-	LIST_HEAD(tag, mlx5_flow_dv_tag_resource) tags;
-	LIST_HEAD(jump, mlx5_flow_dv_jump_tbl_resource) jump_tbl;
+	struct mlx5_hlist *tag_table;
 	LIST_HEAD(port_id_action_list, mlx5_flow_dv_port_id_action_resource)
 		port_id_action_list; /* List of port ID actions. */
 	LIST_HEAD(push_vlan_action_list, mlx5_flow_dv_push_vlan_action_resource)
@@ -660,6 +701,11 @@ struct mlx5_proc_priv {
 	/* Table of UAR registers for each process. */
 };
 
+/* MTR profile list. */
+TAILQ_HEAD(mlx5_mtr_profiles, mlx5_flow_meter_profile);
+/* MTR list. */
+TAILQ_HEAD(mlx5_flow_meters, mlx5_flow_meter);
+
 #define MLX5_PROC_PRIV(port_id) \
 	((struct mlx5_proc_priv *)rte_eth_devices[port_id].process_private)
 
@@ -680,6 +726,7 @@ struct mlx5_priv {
 	unsigned int master:1; /* Device is a E-Switch master. */
 	unsigned int dr_shared:1; /* DV/DR data is shared. */
 	unsigned int counter_fallback:1; /* Use counter fallback management. */
+	unsigned int mtr_en:1; /* Whether support meter. */
 	uint16_t domain_id; /* Switch domain identifier. */
 	uint16_t vport_id; /* Associated VF vport index (if any). */
 	uint32_t vport_meta_tag; /* Used for vport index match ove VF LAG. */
@@ -724,6 +771,13 @@ struct mlx5_priv {
 	uint32_t nl_sn; /* Netlink message sequence number. */
 	LIST_HEAD(dbrpage, mlx5_devx_dbr_page) dbrpgs; /* Door-bell pages. */
 	struct mlx5_vlan_vmwa_context *vmwa_context; /* VLAN WA context. */
+	struct mlx5_flow_id_pool *qrss_id_pool;
+	struct mlx5_hlist *mreg_cp_tbl;
+	/* Hash table of Rx metadata register copy table. */
+	uint8_t mtr_sfx_reg; /* Meter prefix-suffix flow match REG_C. */
+	uint8_t mtr_color_reg; /* Meter color match REG_C. */
+	struct mlx5_mtr_profiles flow_meter_profiles; /* MTR profile list. */
+	struct mlx5_flow_meters flow_meters; /* MTR list. */
 #ifndef RTE_ARCH_64
 	rte_spinlock_t uar_lock_cq; /* CQs share a common distinct UAR */
 	rte_spinlock_t uar_lock[MLX5_UAR_PAGE_NUM_MAX];
@@ -788,7 +842,7 @@ int mlx5_set_link_up(struct rte_eth_dev *dev);
 int mlx5_is_removed(struct rte_eth_dev *dev);
 eth_tx_burst_t mlx5_select_tx_function(struct rte_eth_dev *dev);
 eth_rx_burst_t mlx5_select_rx_function(struct rte_eth_dev *dev);
-struct mlx5_priv *mlx5_port_to_eswitch_info(uint16_t port);
+struct mlx5_priv *mlx5_port_to_eswitch_info(uint16_t port, bool valid);
 struct mlx5_priv *mlx5_dev_to_eswitch_info(struct rte_eth_dev *dev);
 int mlx5_sysfs_switch_info(unsigned int ifindex,
 			   struct mlx5_switch_info *info);
@@ -868,6 +922,8 @@ int mlx5_traffic_restart(struct rte_eth_dev *dev);
 
 /* mlx5_flow.c */
 
+int mlx5_flow_discover_mreg_c(struct rte_eth_dev *eth_dev);
+bool mlx5_flow_ext_mreg_supported(struct rte_eth_dev *dev);
 int mlx5_flow_discover_priorities(struct rte_eth_dev *dev);
 void mlx5_flow_print(struct rte_flow *flow);
 int mlx5_flow_validate(struct rte_eth_dev *dev,
@@ -912,6 +968,10 @@ void mlx5_flow_async_pool_query_handle(struct mlx5_ibv_shared *sh,
 				       uint64_t async_id, int status);
 void mlx5_set_query_alarm(struct mlx5_ibv_shared *sh);
 void mlx5_flow_query_alarm(void *arg);
+struct mlx5_flow_counter *mlx5_counter_alloc(struct rte_eth_dev *dev);
+void mlx5_counter_free(struct rte_eth_dev *dev, struct mlx5_flow_counter *cnt);
+int mlx5_counter_query(struct rte_eth_dev *dev, struct mlx5_flow_counter *cnt,
+		       bool clear, uint64_t *pkts, uint64_t *bytes);
 
 /* mlx5_mp.c */
 void mlx5_mp_req_start_rxtx(struct rte_eth_dev *dev);
@@ -938,6 +998,8 @@ int mlx5_nl_promisc(struct rte_eth_dev *dev, int enable);
 int mlx5_nl_allmulti(struct rte_eth_dev *dev, int enable);
 unsigned int mlx5_nl_portnum(int nl, const char *name);
 unsigned int mlx5_nl_ifindex(int nl, const char *name, uint32_t pindex);
+int mlx5_nl_vf_mac_addr_modify(struct rte_eth_dev *dev,
+			       struct rte_ether_addr *mac, int vf_index);
 int mlx5_nl_switch_info(int nl, unsigned int ifindex,
 			struct mlx5_switch_info *info);
 
@@ -983,5 +1045,17 @@ int mlx5_devx_cmd_modify_sq
 struct mlx5_devx_obj *mlx5_devx_cmd_create_tis
 	(struct ibv_context *ctx, struct mlx5_devx_tis_attr *tis_attr);
 struct mlx5_devx_obj *mlx5_devx_cmd_create_td(struct ibv_context *ctx);
+
+/* mlx5_flow_meter.c */
+
+int mlx5_flow_meter_ops_get(struct rte_eth_dev *dev, void *arg);
+struct mlx5_flow_meter *mlx5_flow_meter_find(struct mlx5_priv *priv,
+					     uint32_t meter_id);
+struct mlx5_flow_meter *mlx5_flow_meter_attach
+					(struct mlx5_priv *priv,
+					 uint32_t meter_id,
+					 const struct rte_flow_attr *attr,
+					 struct rte_flow_error *error);
+void mlx5_flow_meter_detach(struct mlx5_flow_meter *fm);
 
 #endif /* RTE_PMD_MLX5_H_ */

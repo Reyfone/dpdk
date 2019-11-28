@@ -404,6 +404,10 @@ mlx5_dev_configure(struct rte_eth_dev *dev)
 		rte_errno = ENOMEM;
 		return -rte_errno;
 	}
+
+	if (dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG)
+		dev->data->dev_conf.rxmode.offloads |= DEV_RX_OFFLOAD_RSS_HASH;
+
 	memcpy(priv->rss_conf.rss_key,
 	       use_app_rss_key ?
 	       dev->data->dev_conf.rx_adv_conf.rss_conf.rss_key :
@@ -529,8 +533,8 @@ mlx5_set_default_params(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 	/* Minimum CPU utilization. */
 	info->default_rxportconf.ring_size = 256;
 	info->default_txportconf.ring_size = 256;
-	info->default_rxportconf.burst_size = 64;
-	info->default_txportconf.burst_size = 64;
+	info->default_rxportconf.burst_size = MLX5_RX_DEFAULT_BURST;
+	info->default_txportconf.burst_size = MLX5_TX_DEFAULT_BURST;
 	if (priv->link_speed_capa & ETH_LINK_SPEED_100G) {
 		info->default_rxportconf.nb_queues = 16;
 		info->default_txportconf.nb_queues = 16;
@@ -606,6 +610,7 @@ mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 	/* FIXME: we should ask the device for these values. */
 	info->min_rx_bufsize = 32;
 	info->max_rx_pktlen = 65536;
+	info->max_lro_pkt_size = MLX5_MAX_LRO_SIZE;
 	/*
 	 * Since we need one CQ per QP, the limit is the minimum number
 	 * between the two values.
@@ -1793,6 +1798,10 @@ mlx5_is_removed(struct rte_eth_dev *dev)
  *
  * @param[in] port
  *   Device port id.
+ * @param[in] valid
+ *   Device port id is valid, skip check. This flag is useful
+ *   when trials are performed from probing and device is not
+ *   flagged as valid yet (in attaching process).
  * @param[out] es_domain_id
  *   E-Switch domain id.
  * @param[out] es_port_id
@@ -1803,7 +1812,7 @@ mlx5_is_removed(struct rte_eth_dev *dev)
  *   on success, NULL otherwise and rte_errno is set.
  */
 struct mlx5_priv *
-mlx5_port_to_eswitch_info(uint16_t port)
+mlx5_port_to_eswitch_info(uint16_t port, bool valid)
 {
 	struct rte_eth_dev *dev;
 	struct mlx5_priv *priv;
@@ -1812,7 +1821,7 @@ mlx5_port_to_eswitch_info(uint16_t port)
 		rte_errno = EINVAL;
 		return NULL;
 	}
-	if (!rte_eth_dev_is_valid_port(port)) {
+	if (!valid && !rte_eth_dev_is_valid_port(port)) {
 		rte_errno = ENODEV;
 		return NULL;
 	}

@@ -18,6 +18,7 @@
 #pragma GCC diagnostic ignored "-Wpedantic"
 #endif
 #include <infiniband/verbs.h>
+#include <infiniband/mlx5dv.h>
 #ifdef PEDANTIC
 #pragma GCC diagnostic error "-Wpedantic"
 #endif
@@ -126,7 +127,8 @@ mlx5_get_tx_port_offloads(struct rte_eth_dev *dev)
 			offloads |= DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM;
 		if (config->tso)
 			offloads |= (DEV_TX_OFFLOAD_VXLAN_TNL_TSO |
-				     DEV_TX_OFFLOAD_GRE_TNL_TSO);
+				     DEV_TX_OFFLOAD_GRE_TNL_TSO |
+				     DEV_TX_OFFLOAD_GENEVE_TNL_TSO);
 	}
 	return offloads;
 }
@@ -302,6 +304,30 @@ mlx5_tx_queue_release(void *dpdk_txq)
 }
 
 /**
+ * Configure the doorbell register non-cached attribute.
+ *
+ * @param txq_ctrl
+ *   Pointer to Tx queue control structure.
+ * @param page_size
+ *   Systme page size
+ */
+static void
+txq_uar_ncattr_init(struct mlx5_txq_ctrl *txq_ctrl, size_t page_size)
+{
+	struct mlx5_priv *priv = txq_ctrl->priv;
+	unsigned int cmd;
+
+	txq_ctrl->txq.db_heu = priv->config.dbnc == MLX5_TXDB_HEURISTIC;
+	txq_ctrl->txq.db_nc = 0;
+	/* Check the doorbell register mapping type. */
+	cmd = txq_ctrl->uar_mmap_offset / page_size;
+	cmd >>= MLX5_UAR_MMAP_CMD_SHIFT;
+	cmd &= MLX5_UAR_MMAP_CMD_MASK;
+	if (cmd == MLX5_MMAP_GET_NC_PAGES_CMD)
+		txq_ctrl->txq.db_nc = 1;
+}
+
+/**
  * Initialize Tx UAR registers for primary process.
  *
  * @param txq_ctrl
@@ -312,9 +338,9 @@ txq_uar_init(struct mlx5_txq_ctrl *txq_ctrl)
 {
 	struct mlx5_priv *priv = txq_ctrl->priv;
 	struct mlx5_proc_priv *ppriv = MLX5_PROC_PRIV(PORT_ID(priv));
+	const size_t page_size = sysconf(_SC_PAGESIZE);
 #ifndef RTE_ARCH_64
 	unsigned int lock_idx;
-	const size_t page_size = sysconf(_SC_PAGESIZE);
 #endif
 
 	if (txq_ctrl->type != MLX5_TXQ_TYPE_STANDARD)
@@ -322,6 +348,7 @@ txq_uar_init(struct mlx5_txq_ctrl *txq_ctrl)
 	assert(rte_eal_process_type() == RTE_PROC_PRIMARY);
 	assert(ppriv);
 	ppriv->uar_table[txq_ctrl->txq.idx] = txq_ctrl->bf_reg;
+	txq_uar_ncattr_init(txq_ctrl, page_size);
 #ifndef RTE_ARCH_64
 	/* Assign an UAR lock according to UAR page number */
 	lock_idx = (txq_ctrl->uar_mmap_offset / page_size) &
@@ -375,6 +402,7 @@ txq_uar_init_secondary(struct mlx5_txq_ctrl *txq_ctrl, int fd)
 	}
 	addr = RTE_PTR_ADD(addr, offset);
 	ppriv->uar_table[txq->idx] = addr;
+	txq_uar_ncattr_init(txq_ctrl, page_size);
 	return 0;
 }
 
@@ -930,7 +958,7 @@ txq_set_params(struct mlx5_txq_ctrl *txq_ctrl)
 		     (unsigned int)config->txq_inline_mpw;
 	inlen_mode = (config->txq_inline_min == MLX5_ARG_UNSET) ?
 		     0 : (unsigned int)config->txq_inline_min;
-	if (config->mps != MLX5_MPW_ENHANCED)
+	if (config->mps != MLX5_MPW_ENHANCED && config->mps != MLX5_MPW)
 		inlen_empw = 0;
 	/*
 	 * If there is requested minimal amount of data to inline
@@ -1185,7 +1213,8 @@ txq_adjust_params(struct mlx5_txq_ctrl *txq_ctrl)
 	assert(txq_ctrl->max_inline_data <= max_inline);
 	assert(txq_ctrl->txq.inlen_mode <= max_inline);
 	assert(txq_ctrl->txq.inlen_mode <= txq_ctrl->txq.inlen_send);
-	assert(txq_ctrl->txq.inlen_mode <= txq_ctrl->txq.inlen_empw);
+	assert(txq_ctrl->txq.inlen_mode <= txq_ctrl->txq.inlen_empw ||
+	       !txq_ctrl->txq.inlen_empw);
 	return 0;
 error:
 	rte_errno = ENOMEM;

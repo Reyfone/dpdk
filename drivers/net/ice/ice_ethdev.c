@@ -14,6 +14,8 @@
 #include "base/ice_flow.h"
 #include "base/ice_dcb.h"
 #include "base/ice_common.h"
+
+#include "rte_pmd_ice.h"
 #include "ice_ethdev.h"
 #include "ice_rxtx.h"
 #include "ice_generic_flow.h"
@@ -21,13 +23,46 @@
 /* devargs */
 #define ICE_SAFE_MODE_SUPPORT_ARG "safe-mode-support"
 #define ICE_PIPELINE_MODE_SUPPORT_ARG  "pipeline-mode-support"
+#define ICE_FLOW_MARK_SUPPORT_ARG	"flow-mark-support"
 #define ICE_PROTO_XTR_ARG         "proto_xtr"
 
 static const char * const ice_valid_args[] = {
 	ICE_SAFE_MODE_SUPPORT_ARG,
 	ICE_PIPELINE_MODE_SUPPORT_ARG,
+	ICE_FLOW_MARK_SUPPORT_ARG,
 	ICE_PROTO_XTR_ARG,
 	NULL
+};
+
+static const struct rte_mbuf_dynfield ice_proto_xtr_metadata_param = {
+	.name = "ice_dynfield_proto_xtr_metadata",
+	.size = sizeof(uint32_t),
+	.align = __alignof__(uint32_t),
+	.flags = 0,
+};
+
+struct proto_xtr_ol_flag {
+	const struct rte_mbuf_dynflag param;
+	uint64_t *ol_flag;
+	bool required;
+};
+
+static struct proto_xtr_ol_flag ice_proto_xtr_ol_flag_params[] = {
+	[PROTO_XTR_VLAN] = {
+		.param = { .name = "ice_dynflag_proto_xtr_vlan" },
+		.ol_flag = &rte_net_ice_dynflag_proto_xtr_vlan_mask },
+	[PROTO_XTR_IPV4] = {
+		.param = { .name = "ice_dynflag_proto_xtr_ipv4" },
+		.ol_flag = &rte_net_ice_dynflag_proto_xtr_ipv4_mask },
+	[PROTO_XTR_IPV6] = {
+		.param = { .name = "ice_dynflag_proto_xtr_ipv6" },
+		.ol_flag = &rte_net_ice_dynflag_proto_xtr_ipv6_mask },
+	[PROTO_XTR_IPV6_FLOW] = {
+		.param = { .name = "ice_dynflag_proto_xtr_ipv6_flow" },
+		.ol_flag = &rte_net_ice_dynflag_proto_xtr_ipv6_flow_mask },
+	[PROTO_XTR_TCP] = {
+		.param = { .name = "ice_dynflag_proto_xtr_tcp" },
+		.ol_flag = &rte_net_ice_dynflag_proto_xtr_tcp_mask },
 };
 
 #define ICE_DFLT_OUTER_TAG_TYPE ICE_AQ_VSI_OUTER_TAG_VLAN_9100
@@ -69,9 +104,6 @@ static int ice_dev_set_link_down(struct rte_eth_dev *dev);
 
 static int ice_mtu_set(struct rte_eth_dev *dev, uint16_t mtu);
 static int ice_vlan_offload_set(struct rte_eth_dev *dev, int mask);
-static int ice_vlan_tpid_set(struct rte_eth_dev *dev,
-			     enum rte_vlan_type vlan_type,
-			     uint16_t tpid);
 static int ice_rss_reta_update(struct rte_eth_dev *dev,
 			       struct rte_eth_rss_reta_entry64 *reta_conf,
 			       uint16_t reta_size);
@@ -159,7 +191,6 @@ static const struct eth_dev_ops ice_eth_dev_ops = {
 	.mac_addr_remove              = ice_macaddr_remove,
 	.vlan_filter_set              = ice_vlan_filter_set,
 	.vlan_offload_set             = ice_vlan_offload_set,
-	.vlan_tpid_set                = ice_vlan_tpid_set,
 	.reta_update                  = ice_rss_reta_update,
 	.reta_query                   = ice_rss_reta_query,
 	.rss_hash_update              = ice_rss_hash_update,
@@ -1388,6 +1419,9 @@ ice_init_proto_xtr(struct rte_eth_dev *dev)
 			ICE_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 	struct ice_pf *pf = ICE_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 	struct ice_hw *hw = ICE_PF_TO_HW(pf);
+	const struct proto_xtr_ol_flag *ol_flag;
+	bool proto_xtr_enable = false;
+	int offset;
 	uint16_t i;
 
 	if (!ice_proto_xtr_support(hw)) {
@@ -1401,10 +1435,56 @@ ice_init_proto_xtr(struct rte_eth_dev *dev)
 		return;
 	}
 
-	for (i = 0; i < pf->lan_nb_qps; i++)
+	for (i = 0; i < pf->lan_nb_qps; i++) {
 		pf->proto_xtr[i] = ad->devargs.proto_xtr[i] != PROTO_XTR_NONE ?
 				   ad->devargs.proto_xtr[i] :
 				   ad->devargs.proto_xtr_dflt;
+
+		if (pf->proto_xtr[i] != PROTO_XTR_NONE) {
+			uint8_t type = pf->proto_xtr[i];
+
+			ice_proto_xtr_ol_flag_params[type].required = true;
+			proto_xtr_enable = true;
+		}
+	}
+
+	if (likely(!proto_xtr_enable))
+		return;
+
+	offset = rte_mbuf_dynfield_register(&ice_proto_xtr_metadata_param);
+	if (unlikely(offset == -1)) {
+		PMD_DRV_LOG(ERR,
+			    "Protocol extraction metadata is disabled in mbuf with error %d",
+			    -rte_errno);
+		return;
+	}
+
+	PMD_DRV_LOG(DEBUG,
+		    "Protocol extraction metadata offset in mbuf is : %d",
+		    offset);
+	rte_net_ice_dynfield_proto_xtr_metadata_offs = offset;
+
+	for (i = 0; i < RTE_DIM(ice_proto_xtr_ol_flag_params); i++) {
+		ol_flag = &ice_proto_xtr_ol_flag_params[i];
+
+		if (!ol_flag->required)
+			continue;
+
+		offset = rte_mbuf_dynflag_register(&ol_flag->param);
+		if (unlikely(offset == -1)) {
+			PMD_DRV_LOG(ERR,
+				    "Protocol extraction offload '%s' failed to register with error %d",
+				    ol_flag->param.name, -rte_errno);
+
+			rte_net_ice_dynfield_proto_xtr_metadata_offs = -1;
+			break;
+		}
+
+		PMD_DRV_LOG(DEBUG,
+			    "Protocol extraction offload '%s' offset in mbuf is : %d",
+			    ol_flag->param.name, offset);
+		*ol_flag->ol_flag = 1ULL << offset;
+	}
 }
 
 /*  Initialize SW parameters of PF */
@@ -1909,6 +1989,13 @@ static int ice_parse_devargs(struct rte_eth_dev *dev)
 
 	ret = rte_kvargs_process(kvlist, ICE_PIPELINE_MODE_SUPPORT_ARG,
 				 &parse_bool, &ad->devargs.pipe_mode_support);
+	if (ret)
+		goto bail;
+
+	ret = rte_kvargs_process(kvlist, ICE_FLOW_MARK_SUPPORT_ARG,
+				 &parse_bool, &ad->devargs.flow_mark_support);
+	if (ret)
+		goto bail;
 
 bail:
 	rte_kvargs_free(kvlist);
@@ -2164,10 +2251,12 @@ ice_dev_init(struct rte_eth_dev *dev)
 	/* get base queue pairs index  in the device */
 	ice_base_queue_get(pf);
 
-	ret = ice_flow_init(ad);
-	if (ret) {
-		PMD_INIT_LOG(ERR, "Failed to initialize flow");
-		return ret;
+	if (!ad->is_safe_mode) {
+		ret = ice_flow_init(ad);
+		if (ret) {
+			PMD_INIT_LOG(ERR, "Failed to initialize flow");
+			return ret;
+		}
 	}
 
 	ret = ice_reset_fxp_resource(hw);
@@ -2221,7 +2310,7 @@ ice_release_vsi(struct ice_vsi *vsi)
 	return 0;
 }
 
-static void
+void
 ice_vsi_disable_queues_intr(struct ice_vsi *vsi)
 {
 	struct rte_eth_dev *dev = vsi->adapter->eth_dev;
@@ -2274,13 +2363,13 @@ ice_dev_stop(struct rte_eth_dev *dev)
 	/* disable all queue interrupts */
 	ice_vsi_disable_queues_intr(main_vsi);
 
-	if (pf->fdir.fdir_vsi)
-		ice_vsi_disable_queues_intr(pf->fdir.fdir_vsi);
-
 	/* Clear all queues and release mbufs */
 	ice_clear_queues(dev);
 
-	ice_dev_set_link_down(dev);
+	if (pf->init_link_up)
+		ice_dev_set_link_up(dev);
+	else
+		ice_dev_set_link_down(dev);
 
 	/* Clean datapath event and queue/vec mapping */
 	rte_intr_efd_disable(intr_handle);
@@ -2311,7 +2400,8 @@ ice_dev_close(struct rte_eth_dev *dev)
 
 	ice_dev_stop(dev);
 
-	ice_flow_uninit(ad);
+	if (!ad->is_safe_mode)
+		ice_flow_uninit(ad);
 
 	/* release all queue resource */
 	ice_free_queues(dev);
@@ -2319,6 +2409,7 @@ ice_dev_close(struct rte_eth_dev *dev)
 	ice_res_pool_destroy(&pf->msix_pool);
 	ice_release_vsi(pf->main_vsi);
 	ice_sched_cleanup_all(hw);
+	ice_free_hw_tbls(hw);
 	rte_free(hw->port_info);
 	hw->port_info = NULL;
 	ice_shutdown_all_ctrlq(hw);
@@ -2359,6 +2450,9 @@ ice_dev_configure(struct rte_eth_dev *dev)
 	 */
 	ad->rx_bulk_alloc_allowed = true;
 	ad->tx_simple_allowed = true;
+
+	if (dev->data->dev_conf.rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG)
+		dev->data->dev_conf.rxmode.offloads |= DEV_RX_OFFLOAD_RSS_HASH;
 
 	return 0;
 }
@@ -2517,7 +2611,7 @@ __vsi_queues_bind_intr(struct ice_vsi *vsi, uint16_t msix_vect,
 	}
 }
 
-static void
+void
 ice_vsi_queues_bind_intr(struct ice_vsi *vsi)
 {
 	struct rte_eth_dev *dev = vsi->adapter->eth_dev;
@@ -2570,7 +2664,7 @@ ice_vsi_queues_bind_intr(struct ice_vsi *vsi)
 	}
 }
 
-static void
+void
 ice_vsi_enable_queues_intr(struct ice_vsi *vsi)
 {
 	struct rte_eth_dev *dev = vsi->adapter->eth_dev;
@@ -2640,15 +2734,30 @@ ice_rxq_intr_setup(struct rte_eth_dev *dev)
 	/* Enable interrupts for all the queues */
 	ice_vsi_enable_queues_intr(vsi);
 
-	/* Enable FDIR MSIX interrupt */
-	if (pf->fdir.fdir_vsi) {
-		ice_vsi_queues_bind_intr(pf->fdir.fdir_vsi);
-		ice_vsi_enable_queues_intr(pf->fdir.fdir_vsi);
-	}
-
 	rte_intr_enable(intr_handle);
 
 	return 0;
+}
+
+static void
+ice_get_init_link_status(struct rte_eth_dev *dev)
+{
+	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct ice_pf *pf = ICE_DEV_PRIVATE_TO_PF(dev->data->dev_private);
+	bool enable_lse = dev->data->dev_conf.intr_conf.lsc ? true : false;
+	struct ice_link_status link_status;
+	int ret;
+
+	ret = ice_aq_get_link_info(hw->port_info, enable_lse,
+				   &link_status, NULL);
+	if (ret != ICE_SUCCESS) {
+		PMD_DRV_LOG(ERR, "Failed to get link info");
+		pf->init_link_up = false;
+		return;
+	}
+
+	if (link_status.link_info & ICE_AQ_LINK_UP)
+		pf->init_link_up = true;
 }
 
 static int
@@ -2720,6 +2829,8 @@ ice_dev_start(struct rte_eth_dev *dev)
 				     NULL);
 	if (ret != ICE_SUCCESS)
 		PMD_DRV_LOG(WARNING, "Fail to set phy mask");
+
+	ice_get_init_link_status(dev);
 
 	ice_dev_set_link_up(dev);
 
@@ -2812,7 +2923,8 @@ ice_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 			DEV_RX_OFFLOAD_TCP_CKSUM |
 			DEV_RX_OFFLOAD_QINQ_STRIP |
 			DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM |
-			DEV_RX_OFFLOAD_VLAN_EXTEND;
+			DEV_RX_OFFLOAD_VLAN_EXTEND |
+			DEV_RX_OFFLOAD_RSS_HASH;
 		dev_info->tx_offload_capa |=
 			DEV_TX_OFFLOAD_QINQ_INSERT |
 			DEV_TX_OFFLOAD_IPV4_CKSUM |
@@ -3350,56 +3462,6 @@ ice_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 	}
 
 	return 0;
-}
-
-static int
-ice_vlan_tpid_set(struct rte_eth_dev *dev,
-		  enum rte_vlan_type vlan_type,
-		  uint16_t tpid)
-{
-	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	uint64_t reg_r = 0, reg_w = 0;
-	uint16_t reg_id = 0;
-	int ret = 0;
-	int qinq = dev->data->dev_conf.rxmode.offloads &
-		   DEV_RX_OFFLOAD_VLAN_EXTEND;
-
-	switch (vlan_type) {
-	case ETH_VLAN_TYPE_OUTER:
-		if (qinq)
-			reg_id = 3;
-		else
-			reg_id = 5;
-		break;
-	case ETH_VLAN_TYPE_INNER:
-		if (qinq) {
-			reg_id = 5;
-		} else {
-			PMD_DRV_LOG(ERR,
-				    "Unsupported vlan type in single vlan.");
-			return -EINVAL;
-		}
-		break;
-	default:
-		PMD_DRV_LOG(ERR, "Unsupported vlan type %d", vlan_type);
-		return -EINVAL;
-	}
-	reg_r = ICE_READ_REG(hw, GL_SWT_L2TAGCTRL(reg_id));
-	PMD_DRV_LOG(DEBUG, "Debug read from ICE GL_SWT_L2TAGCTRL[%d]: "
-		    "0x%08"PRIx64"", reg_id, reg_r);
-
-	reg_w = reg_r & (~(GL_SWT_L2TAGCTRL_ETHERTYPE_M));
-	reg_w |= ((uint64_t)tpid << GL_SWT_L2TAGCTRL_ETHERTYPE_S);
-	if (reg_r == reg_w) {
-		PMD_DRV_LOG(DEBUG, "No need to write");
-		return 0;
-	}
-
-	ICE_WRITE_REG(hw, GL_SWT_L2TAGCTRL(reg_id), reg_w);
-	PMD_DRV_LOG(DEBUG, "Debug write 0x%08"PRIx64" to "
-		    "ICE GL_SWT_L2TAGCTRL[%d]", reg_w, reg_id);
-
-	return ret;
 }
 
 static int
@@ -4509,7 +4571,8 @@ RTE_PMD_REGISTER_KMOD_DEP(net_ice, "* igb_uio | uio_pci_generic | vfio-pci");
 RTE_PMD_REGISTER_PARAM_STRING(net_ice,
 			      ICE_PROTO_XTR_ARG "=[queue:]<vlan|ipv4|ipv6|ipv6_flow|tcp>"
 			      ICE_SAFE_MODE_SUPPORT_ARG "=<0|1>"
-			      ICE_PIPELINE_MODE_SUPPORT_ARG "=<0|1>");
+			      ICE_PIPELINE_MODE_SUPPORT_ARG "=<0|1>"
+			      ICE_FLOW_MARK_SUPPORT_ARG "=<0|1>");
 
 RTE_INIT(ice_init_log)
 {

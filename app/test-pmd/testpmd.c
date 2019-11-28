@@ -359,6 +359,9 @@ uint8_t hot_plug = 0; /**< hotplug disabled by default. */
 /* After attach, port setup is called on event or by iterator */
 bool setup_on_probe_event = true;
 
+/* Clear ptypes on port initialization. */
+uint8_t clear_ptypes = true;
+
 /* Pretty printing of ethdev events */
 static const char * const eth_event_desc[] = {
 	[RTE_ETH_EVENT_UNKNOWN] = "unknown",
@@ -976,7 +979,7 @@ check_socket_id(const unsigned int socket_id)
 queueid_t
 get_allowed_max_nb_rxq(portid_t *pid)
 {
-	queueid_t allowed_max_rxq = MAX_QUEUE_ID;
+	queueid_t allowed_max_rxq = RTE_MAX_QUEUES_PER_PORT;
 	bool max_rxq_valid = false;
 	portid_t pi;
 	struct rte_eth_dev_info dev_info;
@@ -1026,7 +1029,7 @@ check_nb_rxq(queueid_t rxq)
 queueid_t
 get_allowed_max_nb_txq(portid_t *pid)
 {
-	queueid_t allowed_max_txq = MAX_QUEUE_ID;
+	queueid_t allowed_max_txq = RTE_MAX_QUEUES_PER_PORT;
 	bool max_txq_valid = false;
 	portid_t pi;
 	struct rte_eth_dev_info dev_info;
@@ -1076,7 +1079,7 @@ check_nb_txq(queueid_t txq)
 queueid_t
 get_allowed_max_nb_hairpinq(portid_t *pid)
 {
-	queueid_t allowed_max_hairpinq = MAX_QUEUE_ID;
+	queueid_t allowed_max_hairpinq = RTE_MAX_QUEUES_PER_PORT;
 	portid_t pi;
 	struct rte_eth_hairpin_cap cap;
 
@@ -2269,6 +2272,15 @@ start_port(portid_t pid)
 				return -1;
 		}
 		configure_rxtx_dump_callbacks(verbose_level);
+		if (clear_ptypes) {
+			diag = rte_eth_dev_set_ptypes(pi, RTE_PTYPE_UNKNOWN,
+					NULL, 0);
+			if (diag < 0)
+				printf(
+				"Port %d: Failed to disable Ptype parsing\n",
+				pi);
+		}
+
 		/* start port */
 		if (rte_eth_dev_start(pi) < 0) {
 			printf("Fail to start port %d\n", pi);
@@ -2545,6 +2557,9 @@ detach_port_device(portid_t port_id)
 
 	printf("Removing a device...\n");
 
+	if (port_id_is_invalid(port_id, ENABLED_WARN))
+		return;
+
 	dev = rte_eth_devices[port_id].device;
 	if (dev == NULL) {
 		printf("Device already removed\n");
@@ -2604,6 +2619,7 @@ detach_device(char *identifier)
 		if (ports[port_id].port_status != RTE_PORT_CLOSED) {
 			if (ports[port_id].port_status != RTE_PORT_STOPPED) {
 				printf("Port %u not stopped\n", port_id);
+				rte_eth_iterator_cleanup(&iterator);
 				return;
 			}
 

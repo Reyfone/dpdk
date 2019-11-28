@@ -129,6 +129,7 @@ static const struct {
 	RTE_RX_OFFLOAD_BIT2STR(KEEP_CRC),
 	RTE_RX_OFFLOAD_BIT2STR(SCTP_CKSUM),
 	RTE_RX_OFFLOAD_BIT2STR(OUTER_UDP_CKSUM),
+	RTE_RX_OFFLOAD_BIT2STR(RSS_HASH),
 };
 
 #undef RTE_RX_OFFLOAD_BIT2STR
@@ -1136,6 +1137,84 @@ rte_eth_dev_tx_offload_name(uint64_t offload)
 	return name;
 }
 
+static inline int
+check_lro_pkt_size(uint16_t port_id, uint32_t config_size,
+		   uint32_t max_rx_pkt_len, uint32_t dev_info_size)
+{
+	int ret = 0;
+
+	if (dev_info_size == 0) {
+		if (config_size != max_rx_pkt_len) {
+			RTE_ETHDEV_LOG(ERR, "Ethdev port_id=%d max_lro_pkt_size"
+				       " %u != %u is not allowed\n",
+				       port_id, config_size, max_rx_pkt_len);
+			ret = -EINVAL;
+		}
+	} else if (config_size > dev_info_size) {
+		RTE_ETHDEV_LOG(ERR, "Ethdev port_id=%d max_lro_pkt_size %u "
+			       "> max allowed value %u\n", port_id, config_size,
+			       dev_info_size);
+		ret = -EINVAL;
+	} else if (config_size < RTE_ETHER_MIN_LEN) {
+		RTE_ETHDEV_LOG(ERR, "Ethdev port_id=%d max_lro_pkt_size %u "
+			       "< min allowed value %u\n", port_id, config_size,
+			       (unsigned int)RTE_ETHER_MIN_LEN);
+		ret = -EINVAL;
+	}
+	return ret;
+}
+
+/*
+ * Validate offloads that are requested through rte_eth_dev_configure against
+ * the offloads successfuly set by the ethernet device.
+ *
+ * @param port_id
+ *   The port identifier of the Ethernet device.
+ * @param req_offloads
+ *   The offloads that have been requested through `rte_eth_dev_configure`.
+ * @param set_offloads
+ *   The offloads successfuly set by the ethernet device.
+ * @param offload_type
+ *   The offload type i.e. Rx/Tx string.
+ * @param offload_name
+ *   The function that prints the offload name.
+ * @return
+ *   - (0) if validation successful.
+ *   - (-EINVAL) if requested offload has been silently disabled.
+ *
+ */
+static int
+validate_offloads(uint16_t port_id, uint64_t req_offloads,
+		  uint64_t set_offloads, const char *offload_type,
+		  const char *(*offload_name)(uint64_t))
+{
+	uint64_t offloads_diff = req_offloads ^ set_offloads;
+	uint64_t offload;
+	int ret = 0;
+
+	while (offloads_diff != 0) {
+		/* Check if any offload is requested but not enabled. */
+		offload = 1ULL << __builtin_ctzll(offloads_diff);
+		if (offload & req_offloads) {
+			RTE_ETHDEV_LOG(ERR,
+				"Port %u failed to enable %s offload %s\n",
+				port_id, offload_type, offload_name(offload));
+			ret = -EINVAL;
+		}
+
+		/* Chech if offload couldn't be disabled. */
+		if (offload & set_offloads) {
+			RTE_ETHDEV_LOG(DEBUG,
+				"Port %u %s offload %s is not requested but enabled\n",
+				port_id, offload_type, offload_name(offload));
+		}
+
+		offloads_diff &= ~offload;
+	}
+
+	return ret;
+}
+
 int
 rte_eth_dev_configure(uint16_t port_id, uint16_t nb_rx_q, uint16_t nb_tx_q,
 		      const struct rte_eth_conf *dev_conf)
@@ -1166,7 +1245,9 @@ rte_eth_dev_configure(uint16_t port_id, uint16_t nb_rx_q, uint16_t nb_tx_q,
 	 * Copy the dev_conf parameter into the dev structure.
 	 * rte_eth_dev_info_get() requires dev_conf, copy it before dev_info get
 	 */
-	memcpy(&dev->data->dev_conf, dev_conf, sizeof(dev->data->dev_conf));
+	if (dev_conf != &dev->data->dev_conf)
+		memcpy(&dev->data->dev_conf, dev_conf,
+		       sizeof(dev->data->dev_conf));
 
 	ret = rte_eth_dev_info_get(port_id, &dev_info);
 	if (ret != 0)
@@ -1266,6 +1347,22 @@ rte_eth_dev_configure(uint16_t port_id, uint16_t nb_rx_q, uint16_t nb_tx_q,
 							RTE_ETHER_MAX_LEN;
 	}
 
+	/*
+	 * If LRO is enabled, check that the maximum aggregated packet
+	 * size is supported by the configured device.
+	 */
+	if (dev_conf->rxmode.offloads & DEV_RX_OFFLOAD_TCP_LRO) {
+		if (dev_conf->rxmode.max_lro_pkt_size == 0)
+			dev->data->dev_conf.rxmode.max_lro_pkt_size =
+				dev->data->dev_conf.rxmode.max_rx_pkt_len;
+		ret = check_lro_pkt_size(port_id,
+				dev->data->dev_conf.rxmode.max_lro_pkt_size,
+				dev->data->dev_conf.rxmode.max_rx_pkt_len,
+				dev_info.max_lro_pkt_size);
+		if (ret != 0)
+			goto rollback;
+	}
+
 	/* Any requested offloading must be within its device capabilities */
 	if ((dev_conf->rxmode.offloads & dev_info.rx_offload_capa) !=
 	     dev_conf->rxmode.offloads) {
@@ -1305,6 +1402,17 @@ rte_eth_dev_configure(uint16_t port_id, uint16_t nb_rx_q, uint16_t nb_tx_q,
 		goto rollback;
 	}
 
+	/* Check if Rx RSS distribution is disabled but RSS hash is enabled. */
+	if (((dev_conf->rxmode.mq_mode & ETH_MQ_RX_RSS_FLAG) == 0) &&
+	    (dev_conf->rxmode.offloads & DEV_RX_OFFLOAD_RSS_HASH)) {
+		RTE_ETHDEV_LOG(ERR,
+			"Ethdev port_id=%u config invalid Rx mq_mode without RSS but %s offload is requested\n",
+			port_id,
+			rte_eth_dev_rx_offload_name(DEV_RX_OFFLOAD_RSS_HASH));
+		ret = -EINVAL;
+		goto rollback;
+	}
+
 	/*
 	 * Setup new number of RX/TX queues and reconfigure device.
 	 */
@@ -1331,10 +1439,8 @@ rte_eth_dev_configure(uint16_t port_id, uint16_t nb_rx_q, uint16_t nb_tx_q,
 	if (diag != 0) {
 		RTE_ETHDEV_LOG(ERR, "Port%u dev_configure = %d\n",
 			port_id, diag);
-		rte_eth_dev_rx_queue_config(dev, 0);
-		rte_eth_dev_tx_queue_config(dev, 0);
 		ret = eth_err(port_id, diag);
-		goto rollback;
+		goto reset_queues;
 	}
 
 	/* Initialize Rx profiling if enabled at compilation time. */
@@ -1342,14 +1448,34 @@ rte_eth_dev_configure(uint16_t port_id, uint16_t nb_rx_q, uint16_t nb_tx_q,
 	if (diag != 0) {
 		RTE_ETHDEV_LOG(ERR, "Port%u __rte_eth_dev_profile_init = %d\n",
 			port_id, diag);
-		rte_eth_dev_rx_queue_config(dev, 0);
-		rte_eth_dev_tx_queue_config(dev, 0);
 		ret = eth_err(port_id, diag);
-		goto rollback;
+		goto reset_queues;
+	}
+
+	/* Validate Rx offloads. */
+	diag = validate_offloads(port_id,
+			dev_conf->rxmode.offloads,
+			dev->data->dev_conf.rxmode.offloads, "Rx",
+			rte_eth_dev_rx_offload_name);
+	if (diag != 0) {
+		ret = diag;
+		goto reset_queues;
+	}
+
+	/* Validate Tx offloads. */
+	diag = validate_offloads(port_id,
+			dev_conf->txmode.offloads,
+			dev->data->dev_conf.txmode.offloads, "Tx",
+			rte_eth_dev_tx_offload_name);
+	if (diag != 0) {
+		ret = diag;
+		goto reset_queues;
 	}
 
 	return 0;
-
+reset_queues:
+	rte_eth_dev_rx_queue_config(dev, 0);
+	rte_eth_dev_tx_queue_config(dev, 0);
 rollback:
 	memcpy(&dev->data->dev_conf, &orig_conf, sizeof(dev->data->dev_conf));
 
@@ -1768,6 +1894,22 @@ rte_eth_rx_queue_setup(uint16_t port_id, uint16_t rx_queue_id,
 			dev_info.rx_queue_offload_capa,
 			__func__);
 		return -EINVAL;
+	}
+
+	/*
+	 * If LRO is enabled, check that the maximum aggregated packet
+	 * size is supported by the configured device.
+	 */
+	if (local_conf.offloads & DEV_RX_OFFLOAD_TCP_LRO) {
+		if (dev->data->dev_conf.rxmode.max_lro_pkt_size == 0)
+			dev->data->dev_conf.rxmode.max_lro_pkt_size =
+				dev->data->dev_conf.rxmode.max_rx_pkt_len;
+		int ret = check_lro_pkt_size(port_id,
+				dev->data->dev_conf.rxmode.max_lro_pkt_size,
+				dev->data->dev_conf.rxmode.max_rx_pkt_len,
+				dev_info.max_lro_pkt_size);
+		if (ret != 0)
+			return ret;
 	}
 
 	ret = (*dev->dev_ops->rx_queue_setup)(dev, rx_queue_id, nb_rx_desc,
@@ -2844,6 +2986,12 @@ rte_eth_dev_info_get(uint16_t port_id, struct rte_eth_dev_info *dev_info)
 		return eth_err(port_id, diag);
 	}
 
+	/* Maximum number of queues should be <= RTE_MAX_QUEUES_PER_PORT */
+	dev_info->max_rx_queues = RTE_MIN(dev_info->max_rx_queues,
+			RTE_MAX_QUEUES_PER_PORT);
+	dev_info->max_tx_queues = RTE_MIN(dev_info->max_tx_queues,
+			RTE_MAX_QUEUES_PER_PORT);
+
 	dev_info->driver_name = dev->device->driver->name;
 	dev_info->nb_rx_queues = dev->data->nb_rx_queues;
 	dev_info->nb_tx_queues = dev->data->nb_tx_queues;
@@ -2880,6 +3028,92 @@ rte_eth_dev_get_supported_ptypes(uint16_t port_id, uint32_t ptype_mask,
 }
 
 int
+rte_eth_dev_set_ptypes(uint16_t port_id, uint32_t ptype_mask,
+				 uint32_t *set_ptypes, unsigned int num)
+{
+	const uint32_t valid_ptype_masks[] = {
+		RTE_PTYPE_L2_MASK,
+		RTE_PTYPE_L3_MASK,
+		RTE_PTYPE_L4_MASK,
+		RTE_PTYPE_TUNNEL_MASK,
+		RTE_PTYPE_INNER_L2_MASK,
+		RTE_PTYPE_INNER_L3_MASK,
+		RTE_PTYPE_INNER_L4_MASK,
+	};
+	const uint32_t *all_ptypes;
+	struct rte_eth_dev *dev;
+	uint32_t unused_mask;
+	unsigned int i, j;
+	int ret;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
+	dev = &rte_eth_devices[port_id];
+
+	if (num > 0 && set_ptypes == NULL)
+		return -EINVAL;
+
+	if (*dev->dev_ops->dev_supported_ptypes_get == NULL ||
+			*dev->dev_ops->dev_ptypes_set == NULL) {
+		ret = 0;
+		goto ptype_unknown;
+	}
+
+	if (ptype_mask == 0) {
+		ret = (*dev->dev_ops->dev_ptypes_set)(dev,
+				ptype_mask);
+		goto ptype_unknown;
+	}
+
+	unused_mask = ptype_mask;
+	for (i = 0; i < RTE_DIM(valid_ptype_masks); i++) {
+		uint32_t mask = ptype_mask & valid_ptype_masks[i];
+		if (mask && mask != valid_ptype_masks[i]) {
+			ret = -EINVAL;
+			goto ptype_unknown;
+		}
+		unused_mask &= ~valid_ptype_masks[i];
+	}
+
+	if (unused_mask) {
+		ret = -EINVAL;
+		goto ptype_unknown;
+	}
+
+	all_ptypes = (*dev->dev_ops->dev_supported_ptypes_get)(dev);
+	if (all_ptypes == NULL) {
+		ret = 0;
+		goto ptype_unknown;
+	}
+
+	/*
+	 * Accommodate as many set_ptypes as possible. If the supplied
+	 * set_ptypes array is insufficient fill it partially.
+	 */
+	for (i = 0, j = 0; set_ptypes != NULL &&
+				(all_ptypes[i] != RTE_PTYPE_UNKNOWN); ++i) {
+		if (ptype_mask & all_ptypes[i]) {
+			if (j < num - 1) {
+				set_ptypes[j] = all_ptypes[i];
+				j++;
+				continue;
+			}
+			break;
+		}
+	}
+
+	if (set_ptypes != NULL && j < num)
+		set_ptypes[j] = RTE_PTYPE_UNKNOWN;
+
+	return (*dev->dev_ops->dev_ptypes_set)(dev, ptype_mask);
+
+ptype_unknown:
+	if (num > 0)
+		set_ptypes[0] = RTE_PTYPE_UNKNOWN;
+
+	return ret;
+}
+
+int
 rte_eth_macaddr_get(uint16_t port_id, struct rte_ether_addr *mac_addr)
 {
 	struct rte_eth_dev *dev;
@@ -2890,7 +3124,6 @@ rte_eth_macaddr_get(uint16_t port_id, struct rte_ether_addr *mac_addr)
 
 	return 0;
 }
-
 
 int
 rte_eth_dev_get_mtu(uint16_t port_id, uint16_t *mtu)

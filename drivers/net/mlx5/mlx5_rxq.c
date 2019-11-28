@@ -372,7 +372,8 @@ mlx5_get_rx_queue_offloads(struct rte_eth_dev *dev)
 	struct mlx5_dev_config *config = &priv->config;
 	uint64_t offloads = (DEV_RX_OFFLOAD_SCATTER |
 			     DEV_RX_OFFLOAD_TIMESTAMP |
-			     DEV_RX_OFFLOAD_JUMBO_FRAME);
+			     DEV_RX_OFFLOAD_JUMBO_FRAME |
+			     DEV_RX_OFFLOAD_RSS_HASH);
 
 	if (config->hw_fcs_strip)
 		offloads |= DEV_RX_OFFLOAD_KEEP_CRC;
@@ -670,23 +671,25 @@ static int
 mlx5_rxq_obj_release(struct mlx5_rxq_obj *rxq_obj)
 {
 	assert(rxq_obj);
-	if (rxq_obj->type == MLX5_RXQ_OBJ_TYPE_IBV)
-		assert(rxq_obj->wq);
-	assert(rxq_obj->cq);
 	if (rte_atomic32_dec_and_test(&rxq_obj->refcnt)) {
 		switch (rxq_obj->type) {
 		case MLX5_RXQ_OBJ_TYPE_IBV:
+			assert(rxq_obj->wq);
+			assert(rxq_obj->cq);
 			rxq_free_elts(rxq_obj->rxq_ctrl);
 			claim_zero(mlx5_glue->destroy_wq(rxq_obj->wq));
 			claim_zero(mlx5_glue->destroy_cq(rxq_obj->cq));
 			break;
 		case MLX5_RXQ_OBJ_TYPE_DEVX_RQ:
+			assert(rxq_obj->cq);
+			assert(rxq_obj->rq);
 			rxq_free_elts(rxq_obj->rxq_ctrl);
 			claim_zero(mlx5_devx_cmd_destroy(rxq_obj->rq));
 			rxq_release_rq_resources(rxq_obj->rxq_ctrl);
 			claim_zero(mlx5_glue->destroy_cq(rxq_obj->cq));
 			break;
 		case MLX5_RXQ_OBJ_TYPE_DEVX_HAIRPIN:
+			assert(rxq_obj->rq);
 			rxq_obj_hairpin_release(rxq_obj);
 			break;
 		}
@@ -1701,7 +1704,6 @@ exit:
 	return 0;
 }
 
-#define MLX5_MAX_LRO_SIZE (UINT8_MAX * 256u)
 #define MLX5_MAX_TCP_HDR_OFFSET ((unsigned int)(sizeof(struct rte_ether_hdr) + \
 					sizeof(struct rte_vlan_hdr) * 2 + \
 					sizeof(struct rte_ipv6_hdr)))
@@ -1773,7 +1775,9 @@ mlx5_rxq_new(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 			   dev->data->dev_conf.rxmode.offloads;
 	unsigned int lro_on_queue = !!(offloads & DEV_RX_OFFLOAD_TCP_LRO);
 	const int mprq_en = mlx5_check_mprq_support(dev) > 0;
-	unsigned int max_rx_pkt_len = dev->data->dev_conf.rxmode.max_rx_pkt_len;
+	unsigned int max_rx_pkt_len = lro_on_queue ?
+			dev->data->dev_conf.rxmode.max_lro_pkt_size :
+			dev->data->dev_conf.rxmode.max_rx_pkt_len;
 	unsigned int non_scatter_min_mbuf_size = max_rx_pkt_len +
 							RTE_PKTMBUF_HEADROOM;
 	unsigned int max_lro_size = 0;
@@ -2113,7 +2117,7 @@ mlx5_rxq_get_type(struct rte_eth_dev *dev, uint16_t idx)
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_rxq_ctrl *rxq_ctrl = NULL;
 
-	if ((*priv->rxqs)[idx]) {
+	if (idx < priv->rxqs_n && (*priv->rxqs)[idx]) {
 		rxq_ctrl = container_of((*priv->rxqs)[idx],
 					struct mlx5_rxq_ctrl,
 					rxq);

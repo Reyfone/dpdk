@@ -26,6 +26,7 @@
 #include <rte_branch_prediction.h>
 #include <rte_ether.h>
 #include <rte_cycles.h>
+#include <rte_flow.h>
 
 #include "mlx5.h"
 #include "mlx5_utils.h"
@@ -61,6 +62,7 @@ enum mlx5_txcmp_code {
 #define MLX5_TXOFF_CONFIG_VLAN (1u << 5) /* VLAN insertion supported.*/
 #define MLX5_TXOFF_CONFIG_METADATA (1u << 6) /* Flow metadata. */
 #define MLX5_TXOFF_CONFIG_EMPW (1u << 8) /* Enhanced MPW supported.*/
+#define MLX5_TXOFF_CONFIG_MPW (1u << 9) /* Legacy MPW supported.*/
 
 /* The most common offloads groups. */
 #define MLX5_TXOFF_CONFIG_NONE 0
@@ -1251,6 +1253,10 @@ rxq_cq_to_mbuf(struct mlx5_rxq_data *rxq, struct rte_mbuf *pkt,
 			pkt->hash.fdir.hi = mlx5_flow_mark_get(mark);
 		}
 	}
+	if (rte_flow_dynf_metadata_avail() && cqe->flow_table_metadata) {
+		pkt->ol_flags |= PKT_RX_DYNF_METADATA;
+		*RTE_FLOW_DYNF_METADATA(pkt) = cqe->flow_table_metadata;
+	}
 	if (rxq->csum)
 		pkt->ol_flags |= rxq_cq_to_ol_flags(cqe);
 	if (rxq->vlan_strip &&
@@ -2235,6 +2241,9 @@ mlx5_tx_cseg_init(struct mlx5_txq_data *restrict txq,
 {
 	struct mlx5_wqe_cseg *restrict cs = &wqe->cseg;
 
+	/* For legacy MPW replace the EMPW by TSO with modifier. */
+	if (MLX5_TXOFF_CONFIG(MPW) && opcode == MLX5_OPCODE_ENHANCED_MPSW)
+		opcode = MLX5_OPCODE_TSO | MLX5_OPC_MOD_MPW << 24;
 	cs->opcode = rte_cpu_to_be_32((txq->wqe_ci << 8) | opcode);
 	cs->sq_ds = rte_cpu_to_be_32(txq->qp_num_8s | ds);
 	cs->flags = RTE_BE32(MLX5_COMP_ONLY_FIRST_ERR <<
@@ -3664,6 +3673,7 @@ mlx5_tx_able_to_empw(struct mlx5_txq_data *restrict txq,
 
 /**
  * Check the next packet attributes to match with the eMPW batch ones.
+ * In addition, for legacy MPW the packet length is checked either.
  *
  * @param txq
  *   Pointer to TX queue structure.
@@ -3671,6 +3681,8 @@ mlx5_tx_able_to_empw(struct mlx5_txq_data *restrict txq,
  *   Pointer to Ethernet Segment of eMPW batch.
  * @param loc
  *   Pointer to burst routine local context.
+ * @param dlen
+ *   Length of previous packet in MPW descriptor.
  * @param olx
  *   Configured Tx offloads mask. It is fully defined at
  *   compile time and may be used for optimization.
@@ -3683,6 +3695,7 @@ static __rte_always_inline bool
 mlx5_tx_match_empw(struct mlx5_txq_data *restrict txq __rte_unused,
 		   struct mlx5_wqe_eseg *restrict es,
 		   struct mlx5_txq_local *restrict loc,
+		   uint32_t dlen,
 		   unsigned int olx)
 {
 	uint8_t swp_flags = 0;
@@ -3700,6 +3713,10 @@ mlx5_tx_match_empw(struct mlx5_txq_data *restrict txq __rte_unused,
 	if (MLX5_TXOFF_CONFIG(METADATA) &&
 		es->metadata != (loc->mbuf->ol_flags & PKT_TX_DYNF_METADATA ?
 				 *RTE_FLOW_DYNF_METADATA(loc->mbuf) : 0))
+		return false;
+	/* Legacy MPW can send packets with the same lengt only. */
+	if (MLX5_TXOFF_CONFIG(MPW) &&
+	    dlen != rte_pktmbuf_data_len(loc->mbuf))
 		return false;
 	/* There must be no VLAN packets in eMPW loop. */
 	if (MLX5_TXOFF_CONFIG(VLAN))
@@ -3870,7 +3887,10 @@ mlx5_tx_burst_empw_simple(struct mlx5_txq_data *restrict txq,
 		unsigned int slen = 0;
 
 next_empw:
-		part = RTE_MIN(pkts_n, MLX5_EMPW_MAX_PACKETS);
+		assert(NB_SEGS(loc->mbuf) == 1);
+		part = RTE_MIN(pkts_n, MLX5_TXOFF_CONFIG(MPW) ?
+				       MLX5_MPW_MAX_PACKETS :
+				       MLX5_EMPW_MAX_PACKETS);
 		if (unlikely(loc->elts_free < part)) {
 			/* We have no enough elts to save all mbufs. */
 			if (unlikely(loc->elts_free < MLX5_EMPW_MIN_PACKETS))
@@ -3900,6 +3920,10 @@ next_empw:
 		eseg = &loc->wqe_last->eseg;
 		dseg = &loc->wqe_last->dseg[0];
 		loop = part;
+		/* Store the packet length for legacy MPW. */
+		if (MLX5_TXOFF_CONFIG(MPW))
+			eseg->mss = rte_cpu_to_be_16
+					(rte_pktmbuf_data_len(loc->mbuf));
 		for (;;) {
 			uint32_t dlen = rte_pktmbuf_data_len(loc->mbuf);
 #ifdef MLX5_PMD_SOFT_COUNTERS
@@ -3929,6 +3953,7 @@ next_empw:
 					return MLX5_TXCMP_CODE_EXIT;
 				return MLX5_TXCMP_CODE_MULTI;
 			}
+			assert(NB_SEGS(loc->mbuf) == 1);
 			if (ret == MLX5_TXCMP_CODE_TSO) {
 				part -= loop;
 				mlx5_tx_sdone_empw(txq, loc, part, slen, olx);
@@ -3957,8 +3982,9 @@ next_empw:
 			 * - check sum settings
 			 * - metadata value
 			 * - software parser settings
+			 * - packets length (legacy MPW only)
 			 */
-			if (!mlx5_tx_match_empw(txq, eseg, loc, olx)) {
+			if (!mlx5_tx_match_empw(txq, eseg, loc, dlen, olx)) {
 				assert(loop);
 				part -= loop;
 				mlx5_tx_sdone_empw(txq, loc, part, slen, olx);
@@ -4028,11 +4054,14 @@ mlx5_tx_burst_empw_inline(struct mlx5_txq_data *restrict txq,
 		unsigned int room, part, nlim;
 		unsigned int slen = 0;
 
+		assert(NB_SEGS(loc->mbuf) == 1);
 		/*
 		 * Limits the amount of packets in one WQE
 		 * to improve CQE latency generation.
 		 */
-		nlim = RTE_MIN(pkts_n, MLX5_EMPW_MAX_PACKETS);
+		nlim = RTE_MIN(pkts_n, MLX5_TXOFF_CONFIG(MPW) ?
+				       MLX5_MPW_INLINE_MAX_PACKETS :
+				       MLX5_EMPW_MAX_PACKETS);
 		/* Check whether we have minimal amount WQEs */
 		if (unlikely(loc->wqe_free <
 			    ((2 + MLX5_EMPW_MIN_PACKETS + 3) / 4)))
@@ -4051,6 +4080,10 @@ mlx5_tx_burst_empw_inline(struct mlx5_txq_data *restrict txq,
 				  olx & ~MLX5_TXOFF_CONFIG_VLAN);
 		eseg = &loc->wqe_last->eseg;
 		dseg = &loc->wqe_last->dseg[0];
+		/* Store the packet length for legacy MPW. */
+		if (MLX5_TXOFF_CONFIG(MPW))
+			eseg->mss = rte_cpu_to_be_16
+					(rte_pktmbuf_data_len(loc->mbuf));
 		room = RTE_MIN(MLX5_WQE_SIZE_MAX / MLX5_WQE_SIZE,
 			       loc->wqe_free) * MLX5_WQE_SIZE -
 					MLX5_WQE_CSEG_SIZE -
@@ -4168,6 +4201,7 @@ next_mbuf:
 					return MLX5_TXCMP_CODE_EXIT;
 				return MLX5_TXCMP_CODE_MULTI;
 			}
+			assert(NB_SEGS(loc->mbuf) == 1);
 			if (ret == MLX5_TXCMP_CODE_TSO) {
 				part -= room;
 				mlx5_tx_idone_empw(txq, loc, part, slen, olx);
@@ -4200,8 +4234,9 @@ next_mbuf:
 			 * - check sum settings
 			 * - metadata value
 			 * - software parser settings
+			 * - packets length (legacy MPW only)
 			 */
-			if (!mlx5_tx_match_empw(txq, eseg, loc, olx))
+			if (!mlx5_tx_match_empw(txq, eseg, loc, dlen, olx))
 				break;
 			/* Packet attributes match, continue the same eMPW. */
 			if ((uintptr_t)dseg >= (uintptr_t)txq->wqes_end)
@@ -4304,8 +4339,9 @@ mlx5_tx_burst_single_send(struct mlx5_txq_data *restrict txq,
 				 * free the packet immediately.
 				 */
 				rte_pktmbuf_free_seg(loc->mbuf);
-			} else if (!MLX5_TXOFF_CONFIG(EMPW) &&
-				   txq->inlen_mode) {
+			} else if ((!MLX5_TXOFF_CONFIG(EMPW) ||
+				     MLX5_TXOFF_CONFIG(MPW)) &&
+					txq->inlen_mode) {
 				/*
 				 * If minimal inlining is requested the eMPW
 				 * feature should be disabled due to data is
@@ -4745,8 +4781,33 @@ enter_send_single:
 	 * to improve latencies. The pure software related data treatment
 	 * can be completed after doorbell. Tx CQEs for this SQ are
 	 * processed in this thread only by the polling.
+	 *
+	 * The rdma core library can map doorbell register in two ways,
+	 * depending on the environment variable "MLX5_SHUT_UP_BF":
+	 *
+	 * - as regular cached memory, the variable is either missing or
+	 *   set to zero. This type of mapping may cause the significant
+	 *   doorbell register writing latency and requires explicit
+	 *   memory write barrier to mitigate this issue and prevent
+	 *   write combining.
+	 *
+	 * - as non-cached memory, the variable is present and set to
+	 *   not "0" value. This type of mapping may cause performance
+	 *   impact under heavy loading conditions but the explicit write
+	 *   memory barrier is not required and it may improve core
+	 *   performance.
+	 *
+	 * - the legacy behaviour (prior 19.08 release) was to use some
+	 *   heuristics to decide whether write memory barrier should
+	 *   be performed. This behavior is supported with specifying
+	 *   tx_db_nc=2, write barrier is skipped if application
+	 *   provides the full recommended burst of packets, it
+	 *   supposes the next packets are coming and the write barrier
+	 *   will be issued on the next burst (after descriptor writing,
+	 *   at least).
 	 */
-	mlx5_tx_dbrec_cond_wmb(txq, loc.wqe_last, 0);
+	mlx5_tx_dbrec_cond_wmb(txq, loc.wqe_last, !txq->db_nc &&
+			(!txq->db_heu || pkts_n % MLX5_TX_DEFAULT_BURST));
 	/* Not all of the mbufs may be stored into elts yet. */
 	part = MLX5_TXOFF_CONFIG(INLINE) ? 0 : loc.pkts_sent - loc.pkts_copy;
 	if (!MLX5_TXOFF_CONFIG(INLINE) && part) {
@@ -4915,6 +4976,30 @@ MLX5_TXOFF_DECL(iv,
 		MLX5_TXOFF_CONFIG_METADATA)
 
 /*
+ * Generate routines with Legacy Multi-Packet Write support.
+ * This mode is supported by ConnectX-4LX only and imposes
+ * offload limitations, not supported:
+ *   - ACL/Flows (metadata are becoming meaningless)
+ *   - WQE Inline headers
+ *   - SRIOV (E-Switch offloads)
+ *   - VLAN insertion
+ *   - tunnel encapsulation/decapsulation
+ *   - TSO
+ */
+MLX5_TXOFF_DECL(none_mpw,
+		MLX5_TXOFF_CONFIG_NONE | MLX5_TXOFF_CONFIG_EMPW |
+		MLX5_TXOFF_CONFIG_MPW)
+
+MLX5_TXOFF_DECL(mci_mpw,
+		MLX5_TXOFF_CONFIG_MULTI | MLX5_TXOFF_CONFIG_CSUM |
+		MLX5_TXOFF_CONFIG_INLINE | MLX5_TXOFF_CONFIG_EMPW |
+		MLX5_TXOFF_CONFIG_MPW)
+
+MLX5_TXOFF_DECL(i_mpw,
+		MLX5_TXOFF_CONFIG_INLINE | MLX5_TXOFF_CONFIG_EMPW |
+		MLX5_TXOFF_CONFIG_MPW)
+
+/*
  * Array of declared and compiled Tx burst function and corresponding
  * supported offloads set. The array is used to select the Tx burst
  * function for specified offloads set at Tx queue configuration time.
@@ -5016,7 +5101,6 @@ MLX5_TXOFF_INFO(mti,
 		MLX5_TXOFF_CONFIG_INLINE |
 		MLX5_TXOFF_CONFIG_METADATA)
 
-
 MLX5_TXOFF_INFO(mtv,
 		MLX5_TXOFF_CONFIG_MULTI | MLX5_TXOFF_CONFIG_TSO |
 		MLX5_TXOFF_CONFIG_VLAN |
@@ -5057,6 +5141,19 @@ MLX5_TXOFF_INFO(v,
 MLX5_TXOFF_INFO(iv,
 		MLX5_TXOFF_CONFIG_INLINE | MLX5_TXOFF_CONFIG_VLAN |
 		MLX5_TXOFF_CONFIG_METADATA)
+
+MLX5_TXOFF_INFO(none_mpw,
+		MLX5_TXOFF_CONFIG_NONE | MLX5_TXOFF_CONFIG_EMPW |
+		MLX5_TXOFF_CONFIG_MPW)
+
+MLX5_TXOFF_INFO(mci_mpw,
+		MLX5_TXOFF_CONFIG_MULTI | MLX5_TXOFF_CONFIG_CSUM |
+		MLX5_TXOFF_CONFIG_INLINE | MLX5_TXOFF_CONFIG_EMPW |
+		MLX5_TXOFF_CONFIG_MPW)
+
+MLX5_TXOFF_INFO(i_mpw,
+		MLX5_TXOFF_CONFIG_INLINE | MLX5_TXOFF_CONFIG_EMPW |
+		MLX5_TXOFF_CONFIG_MPW)
 };
 
 /**
@@ -5139,17 +5236,28 @@ mlx5_select_tx_function(struct rte_eth_dev *dev)
 	if (config->mps == MLX5_MPW_ENHANCED &&
 	    config->txq_inline_min <= 0) {
 		/*
-		 * The NIC supports Enhanced Multi-Packet Write.
-		 * We do not support legacy MPW due to its
-		 * hardware related problems, so we just ignore
-		 * legacy MLX5_MPW settings. There should be no
-		 * minimal required inline data.
+		 * The NIC supports Enhanced Multi-Packet Write
+		 * and does not require minimal inline data.
 		 */
 		olx |= MLX5_TXOFF_CONFIG_EMPW;
 	}
 	if (rte_flow_dynf_metadata_avail()) {
 		/* We should support Flow metadata. */
 		olx |= MLX5_TXOFF_CONFIG_METADATA;
+	}
+	if (config->mps == MLX5_MPW) {
+		/*
+		 * The NIC supports Legacy Multi-Packet Write.
+		 * The MLX5_TXOFF_CONFIG_MPW controls the
+		 * descriptor building method in combination
+		 * with MLX5_TXOFF_CONFIG_EMPW.
+		 */
+		if (!(olx & (MLX5_TXOFF_CONFIG_TSO |
+			     MLX5_TXOFF_CONFIG_SWP |
+			     MLX5_TXOFF_CONFIG_VLAN |
+			     MLX5_TXOFF_CONFIG_METADATA)))
+			olx |= MLX5_TXOFF_CONFIG_EMPW |
+			       MLX5_TXOFF_CONFIG_MPW;
 	}
 	/*
 	 * Scan the routines table to find the minimal
@@ -5219,7 +5327,11 @@ mlx5_select_tx_function(struct rte_eth_dev *dev)
 		DRV_LOG(DEBUG, "\tVLANI (VLAN insertion)");
 	if (txoff_func[m].olx & MLX5_TXOFF_CONFIG_METADATA)
 		DRV_LOG(DEBUG, "\tMETAD (tx Flow metadata)");
-	if (txoff_func[m].olx & MLX5_TXOFF_CONFIG_EMPW)
-		DRV_LOG(DEBUG, "\tEMPW  (Enhanced MPW)");
+	if (txoff_func[m].olx & MLX5_TXOFF_CONFIG_EMPW) {
+		if (txoff_func[m].olx & MLX5_TXOFF_CONFIG_MPW)
+			DRV_LOG(DEBUG, "\tMPW   (Legacy MPW)");
+		else
+			DRV_LOG(DEBUG, "\tEMPW  (Enhanced MPW)");
+	}
 	return txoff_func[m].func;
 }

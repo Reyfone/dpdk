@@ -38,11 +38,13 @@ endforeach
 
 if build
 	allow_experimental_apis = true
+	deps += ['hash']
 	ext_deps += libs
 	sources = files(
 		'mlx5.c',
 		'mlx5_ethdev.c',
 		'mlx5_flow.c',
+		'mlx5_flow_meter.c',
 		'mlx5_flow_dv.c',
 		'mlx5_flow_verbs.c',
 		'mlx5_mac.c',
@@ -58,6 +60,7 @@ if build
 		'mlx5_txq.c',
 		'mlx5_vlan.c',
 		'mlx5_devx_cmds.c',
+		'mlx5_utils.c',
 	)
 	if (dpdk_conf.has('RTE_ARCH_X86_64')
 		or dpdk_conf.has('RTE_ARCH_ARM64')
@@ -129,6 +132,10 @@ if build
 		'mlx5dv_devx_obj_query_async' ],
 		[ 'HAVE_MLX5DV_DR_ACTION_DEST_DEVX_TIR', 'infiniband/mlx5dv.h',
 		'mlx5dv_dr_action_create_dest_devx_tir' ],
+		[ 'HAVE_MLX5_DR_CREATE_ACTION_FLOW_METER', 'infiniband/mlx5dv.h',
+		'mlx5dv_dr_action_create_flow_meter' ],
+		[ 'HAVE_MLX5DV_MMAP_GET_NC_PAGES_CMD', 'infiniband/mlx5dv.h',
+		'MLX5_MMAP_GET_NC_PAGES_CMD' ],
 		[ 'HAVE_MLX5DV_DR', 'infiniband/mlx5dv.h',
 		'MLX5DV_DR_DOMAIN_TYPE_NIC_RX' ],
 		[ 'HAVE_MLX5DV_DR_ESWITCH', 'infiniband/mlx5dv.h',
@@ -199,10 +206,14 @@ if pmd_dlopen and build
 	dlopen_so_version = LIB_GLUE_VERSION
 	dlopen_sources = files('mlx5_glue.c')
 	dlopen_install_dir = [ eal_pmd_path + '-glue' ]
+	dlopen_includes = [global_inc]
+	dlopen_includes += include_directories(
+		'../../../lib/librte_eal/common/include/generic',
+	)
 	shared_lib = shared_library(
 		dlopen_lib_name,
 		dlopen_sources,
-		include_directories: global_inc,
+		include_directories: dlopen_includes,
 		c_args: cflags,
 		dependencies: libs,
 		link_args: [

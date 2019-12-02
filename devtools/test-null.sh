@@ -19,11 +19,17 @@ if [ ! -f "$testpmd" ] ; then
 	exit 1
 fi
 
+echo 'build: ' $build
+echo 'testpmd: ' $testpmd
+
 if ldd $testpmd | grep -q librte_ ; then
 	export LD_LIBRARY_PATH=$build/lib:$LD_LIBRARY_PATH
 	libs='-d librte_mempool_ring.so -d librte_pmd_null.so'
+	echo 'Here in if: ' $LD_LIBRARY_PATH
+	find . -name librte_mempool_ring.so
 else
 	libs=
+	echo 'Here in else'
 fi
 
 (sleep 1 && echo stop) |

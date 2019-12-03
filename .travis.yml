@@ -153,12 +153,5 @@ matrix:
         packages:
           - *required_packages
           - *doc_packages
-  - env: DEF_LIB="static" RUN_TESTS=1
-    arch: arm64
-    compiler: gcc
-    addons:
-      apt:
-        packages:
-          - *required_packages
 
 script: ./.ci/${TRAVIS_OS_NAME}-build.sh

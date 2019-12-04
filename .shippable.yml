@@ -1,0 +1,25 @@
+language: c
+
+compiler:
+  - gcc
+
+env:
+  - DEF_LIB="static"
+  - DEF_LIB="shared"
+  - DEF_LIB="static" OPTS="-Denable_kmods=false"
+  - DEF_LIB="shared" OPTS="-Denable_kmods=false"
+  - DEF_LIB="shared" RUN_TESTS=1
+
+build:
+  ci:
+    - apt-get update
+    - apt-get install --no-install-recommends -yy libnuma-dev python3-setuptools python3-wheel python3-pip ninja-build doxygen graphviz python3-sphinx linux-headers-$(uname -r)
+    - sudo python3 -m pip install --upgrade meson
+    - cat /proc/meminfo
+    - sudo sh -c 'echo 1024 > /proc/sys/vm/nr_hugepages'
+    - cat /proc/meminfo
+    - OPTS="$OPTS --default-library=$DEF_LIB"
+    - meson build --werror -Dexamples=all $OPTS
+    - ninja -C build
+    - devtools/test-null.sh
+    - if [ "$RUN_TESTS" = "1" ]; then sudo meson test -C build --suite fast-tests -t 3; fi

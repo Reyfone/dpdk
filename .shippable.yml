@@ -25,4 +25,7 @@ build:
     - if [ "$RUN_TESTS" = "1" ]; then sudo meson test -C build --suite fast-tests -t 3; fi
 
   on_failure:
+    - cat /proc/cmdline
+    - cat /proc/mounts |grep huge
+    - cat /proc/meminfo
     - cat build/meson-logs/testlog.txt

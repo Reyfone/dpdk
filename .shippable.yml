@@ -18,6 +18,8 @@ build:
     - cat /proc/meminfo
     - sudo sh -c 'echo 1024 > /proc/sys/vm/nr_hugepages'
     - cat /proc/meminfo
+    - sudo mkdir /mnt/huge
+    - sudo mount -t hugetlbfs nodev /mnt/huge
     - OPTS="$OPTS --default-library=$DEF_LIB"
     - meson build --werror -Dexamples=all $OPTS
     - ninja -C build

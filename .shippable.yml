@@ -10,6 +10,9 @@ env:
   - DEF_LIB="static" OPTS="-Denable_kmods=false"
   - DEF_LIB="shared" OPTS="-Denable_kmods=false"
 
+runtime:
+  nodePool: shippable_shared_aarch64
+
 build:
   ci:
     - apt-get update

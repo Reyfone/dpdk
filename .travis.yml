@@ -13,7 +13,7 @@ addons:
   apt:
     update: true
     packages: &required_packages
-      - [libnuma-dev, python3-setuptools, python3-wheel, python3-pip, ninja-build]
+      - [libnuma-dev, linux-headers-$(uname -r), python3-setuptools, python3-wheel, python3-pip, ninja-build]
 
 aarch64_packages: &aarch64_packages
   - *required_packages
@@ -115,21 +115,23 @@ matrix:
       apt:
         packages:
           - *extra_packages
-  - env: DEF_LIB="static" OPTS="-Denable_kmods=false"
+  - env: DEF_LIB="static"
     arch: arm64
     compiler: gcc
+    dist: bionic
     addons:
       apt:
         packages:
           - *required_packages
-  - env: DEF_LIB="shared" OPTS="-Denable_kmods=false"
+  - env: DEF_LIB="shared"
     arch: arm64
     compiler: gcc
+    dist: bionic
     addons:
       apt:
         packages:
           - *required_packages
-  - env: DEF_LIB="static" OPTS="-Denable_kmods=false"
+  - env: DEF_LIB="static"
     arch: arm64
     dist: bionic
     compiler: clang
@@ -137,7 +139,7 @@ matrix:
       apt:
         packages:
           - *required_packages
-  - env: DEF_LIB="shared" OPTS="-Denable_kmods=false"
+  - env: DEF_LIB="shared"
     arch: arm64
     dist: bionic
     compiler: clang
@@ -148,6 +150,7 @@ matrix:
   - env: DEF_LIB="shared" OPTS="-Denable_kmods=false" BUILD_DOCS=1
     arch: arm64
     compiler: gcc
+    dist: bionic
     addons:
       apt:
         packages:

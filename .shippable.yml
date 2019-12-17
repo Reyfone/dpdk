@@ -19,7 +19,7 @@ build:
     - apt-get install --no-install-recommends -yy libnuma-dev python3-setuptools python3-wheel python3-pip ninja-build doxygen graphviz python3-sphinx linux-headers-$(uname -r)
     - sudo python3 -m pip install --upgrade meson
     - cat /proc/meminfo
-    - sudo sh -c 'echo 1024 > /proc/sys/vm/nr_hugepages'
+    - sudo sh -c 'echo 1024 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages'
     - cat /proc/meminfo
     - sudo mkdir /mnt/huge
     - sudo mount -t hugetlbfs nodev /mnt/huge
@@ -33,4 +33,8 @@ build:
     - cat /proc/cmdline
     - cat /proc/mounts |grep huge
     - cat /proc/meminfo
+    - ls -l /proc/sys
+    - ls -l /proc/sys/vm
+    - ls -l /sys/kernel/mm
+    - ls -l /sys/kernel/mm/hugepages
     - cat build/meson-logs/testlog.txt

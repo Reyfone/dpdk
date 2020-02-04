@@ -64,6 +64,8 @@ Features
 - Multiple TX and RX queues.
 - Support for scattered TX and RX frames.
 - IPv4, IPv6, TCPv4, TCPv6, UDPv4 and UDPv6 RSS on any number of queues.
+- RSS using different combinations of fields: L3 only, L4 only or both,
+  and source only, destination only or both.
 - Several RSS hash keys, one for each flow type.
 - Default RSS operation with no hash key specification.
 - Configurable RETA table.
@@ -88,6 +90,7 @@ Features
 - Statistics query including Basic, Extended and per queue.
 - Rx HW timestamp.
 - Tunnel types: VXLAN, L3 VXLAN, VXLAN-GPE, GRE, MPLSoGRE, MPLSoUDP, IP-in-IP, Geneve.
+- Tunnel types: VXLAN, L3 VXLAN, VXLAN-GPE, GRE, MPLSoGRE, MPLSoUDP, IP-in-IP, Geneve, GTP.
 - Tunnel HW offloads: packet type, inner/outer RSS, IP and UDP checksum verification.
 - NIC HW offloads: encapsulation (vxlan, gre, mplsoudp, mplsogre), NAT, routing, TTL
   increment/decrement, count, drop, mark. For details please see :ref:`mlx5_offloads_support`.
@@ -156,6 +159,11 @@ Limitations
 
 - VF: flow rules created on VF devices can only match traffic targeted at the
   configured MAC addresses (see ``rte_eth_dev_mac_addr_add()``).
+
+- Match on GTP tunnel header item supports the following fields only:
+
+     - msg_type
+     - teid
 
 .. note::
 
@@ -786,6 +794,10 @@ Below are some firmware configurations listed.
 
    FLEX_PARSER_PROFILE_ENABLE=0
 
+- enable GTP flow matching::
+
+   FLEX_PARSER_PROFILE_ENABLE=3
+
 Prerequisites
 -------------
 
@@ -1115,26 +1127,36 @@ Supported hardware offloads
 .. table:: Minimal SW/HW versions for rte_flow offloads
 
    +-----------------------+-----------------+-----------------+
-   | Offload               | with E-Switch   | with vNIC       |
+   | Offload               | with E-Switch   | with NIC        |
    +=======================+=================+=================+
    | Count                 | | DPDK 19.05    | | DPDK 19.02    |
    |                       | | OFED 4.6      | | OFED 4.6      |
    |                       | | rdma-core 24  | | rdma-core 23  |
    |                       | | ConnectX-5    | | ConnectX-5    |
    +-----------------------+-----------------+-----------------+
-   | Drop / Queue / RSS    | | DPDK 19.05    | | DPDK 18.11    |
+   | Drop                  | | DPDK 19.05    | | DPDK 18.11    |
    |                       | | OFED 4.6      | | OFED 4.5      |
    |                       | | rdma-core 24  | | rdma-core 23  |
    |                       | | ConnectX-5    | | ConnectX-4    |
    +-----------------------+-----------------+-----------------+
+   | Queue / RSS           | |               | | DPDK 18.11    |
+   |                       | |     N/A       | | OFED 4.5      |
+   |                       | |               | | rdma-core 23  |
+   |                       | |               | | ConnectX-4    |
+   +-----------------------+-----------------+-----------------+
    | Encapsulation         | | DPDK 19.05    | | DPDK 19.02    |
-   | (VXLAN / NVGRE / RAW) | | OFED 4.6-2    | | OFED 4.6      |
+   | (VXLAN / NVGRE / RAW) | | OFED 4.7-1    | | OFED 4.6      |
    |                       | | rdma-core 24  | | rdma-core 23  |
    |                       | | ConnectX-5    | | ConnectX-5    |
    +-----------------------+-----------------+-----------------+
+   | Encapsulation         | | DPDK 19.11    | | DPDK 19.11    |
+   | GENEVE                | | OFED 4.7-3    | | OFED 4.7-3    |
+   |                       | | rdma-core 27  | | rdma-core 27  |
+   |                       | | ConnectX-5    | | ConnectX-5    |
+   +-----------------------+-----------------+-----------------+
    | | Header rewrite      | | DPDK 19.05    | | DPDK 19.02    |
-   | | (set_ipv4_src /     | | OFED 4.6-2    | | OFED 4.6-2    |
-   | | set_ipv4_dst /      | | rdma-core 24  | | rdma-core 23  |
+   | | (set_ipv4_src /     | | OFED 4.7-1    | | OFED 4.7-1    |
+   | | set_ipv4_dst /      | | rdma-core 24  | | rdma-core 24  |
    | | set_ipv6_src /      | | ConnectX-5    | | ConnectX-5    |
    | | set_ipv6_dst /      | |               | |               |
    | | set_tp_src /        | |               | |               |
@@ -1145,11 +1167,11 @@ Supported hardware offloads
    | | set_mac_dst)        | |               | |               |
    | |                     | |               | |               |
    | | (of_set_vlan_vid)   | | DPDK 19.11    | | DPDK 19.11    |
-   |                       | | OFED 4.6-4    | | OFED 4.6-4    |
+   |                       | | OFED 4.7-1    | | OFED 4.7-1    |
    |                       | | ConnectX-5    | | ConnectX-5    |
    +-----------------------+-----------------+-----------------+
    | Jump                  | | DPDK 19.05    | | DPDK 19.02    |
-   |                       | | OFED 4.6-4    | | OFED 4.6-4    |
+   |                       | | OFED 4.7-1    | | OFED 4.7-1    |
    |                       | | rdma-core 24  | | N/A           |
    |                       | | ConnectX-5    | | ConnectX-5    |
    +-----------------------+-----------------+-----------------+
@@ -1159,15 +1181,30 @@ Supported hardware offloads
    |                       | | ConnectX-5    | | ConnectX-4    |
    +-----------------------+-----------------+-----------------+
    | Port ID               | | DPDK 19.05    |     | N/A       |
-   |                       | | OFED 4.6      |     | N/A       |
+   |                       | | OFED 4.7-1    |     | N/A       |
    |                       | | rdma-core 24  |     | N/A       |
    |                       | | ConnectX-5    |     | N/A       |
    +-----------------------+-----------------+-----------------+
    | | VLAN                | | DPDK 19.11    | | DPDK 19.11    |
-   | | (of_pop_vlan /      | | OFED 4.6-4    | | OFED 4.6-4    |
+   | | (of_pop_vlan /      | | OFED 4.7-1    | | OFED 4.7-1    |
    | | of_push_vlan /      | | ConnectX-5    | | ConnectX-5    |
    | | of_set_vlan_pcp /   |                 |                 |
    | | of_set_vlan_vid)    |                 |                 |
+   +-----------------------+-----------------+-----------------+
+   | Hairpin               | |               | | DPDK 19.11    |
+   |                       | |     N/A       | | OFED 4.7-3    |
+   |                       | |               | | rdma-core 26  |
+   |                       | |               | | ConnectX-5    |
+   +-----------------------+-----------------+-----------------+
+   | Meta data             | |  DPDK 19.11   | | DPDK 19.11    |
+   |                       | |  OFED 4.7-3   | | OFED 4.7-3    |
+   |                       | |  rdma-core 26 | | rdma-core 26  |
+   |                       | |  ConnectX-5   | | ConnectX-5    |
+   +-----------------------+-----------------+-----------------+
+   | Metering              | |  DPDK 19.11   | | DPDK 19.11    |
+   |                       | |  OFED 4.7-3   | | OFED 4.7-3    |
+   |                       | |  rdma-core 26 | | rdma-core 26  |
+   |                       | |  ConnectX-5   | | ConnectX-5    |
    +-----------------------+-----------------+-----------------+
 
 Notes for testpmd
@@ -1289,3 +1326,31 @@ ConnectX-4/ConnectX-5/ConnectX-6/BlueField devices managed by librte_pmd_mlx5.
       Port 3 Link Up - speed 10000 Mbps - full-duplex
       Done
       testpmd>
+
+How to dump flows
+-----------------
+
+This section demonstrates how to dump flows. Currently, it's possible to dump
+all flows with assistance of external tools.
+
+#. 2 ways to get flow raw file:
+
+   - Using testpmd CLI:
+
+   .. code-block:: console
+
+       testpmd> flow dump <port> <output_file>
+
+   - call rte_flow_dev_dump api:
+
+   .. code-block:: console
+
+       rte_flow_dev_dump(port, file, NULL);
+
+#. Dump human-readable flows from raw file:
+
+   Get flow parsing tool from: https://github.com/Mellanox/mlx_steering_dump
+
+   .. code-block:: console
+
+       mlx_steering_dump.py -f <output_file>

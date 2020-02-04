@@ -25,6 +25,7 @@
 #if defined(RTE_ARCH_X86)
 #include <sys/io.h>
 #endif
+#include <linux/version.h>
 
 #include <rte_compat.h>
 #include <rte_common.h>
@@ -1073,7 +1074,7 @@ rte_eal_init(int argc, char **argv)
 				 */
 				iova_mode = RTE_IOVA_VA;
 				RTE_LOG(DEBUG, EAL, "Physical addresses are unavailable, selecting IOVA as VA mode.\n");
-#if defined(RTE_LIBRTE_KNI) && LINUX_VERSION_CODE > KERNEL_VERSION(4, 9, 0)
+#if defined(RTE_LIBRTE_KNI) && LINUX_VERSION_CODE >= KERNEL_VERSION(4, 10, 0)
 			} else if (rte_eal_check_module("rte_kni") == 1) {
 				iova_mode = RTE_IOVA_PA;
 				RTE_LOG(DEBUG, EAL, "KNI is loaded, selecting IOVA as PA mode for better KNI perfomance.\n");
@@ -1090,9 +1091,9 @@ rte_eal_init(int argc, char **argv)
 				RTE_LOG(DEBUG, EAL, "IOMMU is not available, selecting IOVA as PA mode.\n");
 			}
 		}
-#if defined(RTE_LIBRTE_KNI) && LINUX_VERSION_CODE <= KERNEL_VERSION(4, 9, 0)
+#if defined(RTE_LIBRTE_KNI) && LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0)
 		/* Workaround for KNI which requires physical address to work
-		 * in kernels <= 4.9
+		 * in kernels < 4.10
 		 */
 		if (iova_mode == RTE_IOVA_VA &&
 				rte_eal_check_module("rte_kni") == 1) {

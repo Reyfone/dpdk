@@ -39,3 +39,7 @@ fi
 if [ "$RUN_TESTS" = "1" ]; then
     sudo meson test -C build --suite fast-tests -t 3
 fi
+
+if [ "$RUN_TESTS_NO_HUGE" = "1" ]; then
+    sudo meson test -C build --suite nohuge-tests -t 3
+fi

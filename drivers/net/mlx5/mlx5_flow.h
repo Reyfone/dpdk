@@ -25,8 +25,9 @@
 #include <rte_alarm.h>
 #include <rte_mtr.h>
 
+#include <mlx5_prm.h>
+
 #include "mlx5.h"
-#include "mlx5_prm.h"
 
 /* Private rte flow items. */
 enum mlx5_rte_flow_item_type {
@@ -185,22 +186,18 @@ enum mlx5_feature_name {
 #define MLX5_FLOW_ACTION_DEC_TTL (1u << 19)
 #define MLX5_FLOW_ACTION_SET_MAC_SRC (1u << 20)
 #define MLX5_FLOW_ACTION_SET_MAC_DST (1u << 21)
-#define MLX5_FLOW_ACTION_VXLAN_ENCAP (1u << 22)
-#define MLX5_FLOW_ACTION_VXLAN_DECAP (1u << 23)
-#define MLX5_FLOW_ACTION_NVGRE_ENCAP (1u << 24)
-#define MLX5_FLOW_ACTION_NVGRE_DECAP (1u << 25)
-#define MLX5_FLOW_ACTION_RAW_ENCAP (1u << 26)
-#define MLX5_FLOW_ACTION_RAW_DECAP (1u << 27)
-#define MLX5_FLOW_ACTION_INC_TCP_SEQ (1u << 28)
-#define MLX5_FLOW_ACTION_DEC_TCP_SEQ (1u << 29)
-#define MLX5_FLOW_ACTION_INC_TCP_ACK (1u << 30)
-#define MLX5_FLOW_ACTION_DEC_TCP_ACK (1u << 31)
-#define MLX5_FLOW_ACTION_SET_TAG (1ull << 32)
-#define MLX5_FLOW_ACTION_MARK_EXT (1ull << 33)
-#define MLX5_FLOW_ACTION_SET_META (1ull << 34)
-#define MLX5_FLOW_ACTION_METER (1ull << 35)
-#define MLX5_FLOW_ACTION_SET_IPV4_DSCP (1ull << 36)
-#define MLX5_FLOW_ACTION_SET_IPV6_DSCP (1ull << 37)
+#define MLX5_FLOW_ACTION_ENCAP (1u << 22)
+#define MLX5_FLOW_ACTION_DECAP (1u << 23)
+#define MLX5_FLOW_ACTION_INC_TCP_SEQ (1u << 24)
+#define MLX5_FLOW_ACTION_DEC_TCP_SEQ (1u << 25)
+#define MLX5_FLOW_ACTION_INC_TCP_ACK (1u << 26)
+#define MLX5_FLOW_ACTION_DEC_TCP_ACK (1u << 27)
+#define MLX5_FLOW_ACTION_SET_TAG (1ull << 28)
+#define MLX5_FLOW_ACTION_MARK_EXT (1ull << 29)
+#define MLX5_FLOW_ACTION_SET_META (1ull << 30)
+#define MLX5_FLOW_ACTION_METER (1ull << 31)
+#define MLX5_FLOW_ACTION_SET_IPV4_DSCP (1ull << 32)
+#define MLX5_FLOW_ACTION_SET_IPV6_DSCP (1ull << 33)
 
 #define MLX5_FLOW_FATE_ACTIONS \
 	(MLX5_FLOW_ACTION_DROP | MLX5_FLOW_ACTION_QUEUE | \
@@ -210,15 +207,6 @@ enum mlx5_feature_name {
 	(MLX5_FLOW_ACTION_DROP | MLX5_FLOW_ACTION_PORT_ID | \
 	 MLX5_FLOW_ACTION_JUMP)
 
-#define MLX5_FLOW_ENCAP_ACTIONS	(MLX5_FLOW_ACTION_VXLAN_ENCAP | \
-				 MLX5_FLOW_ACTION_NVGRE_ENCAP | \
-				 MLX5_FLOW_ACTION_RAW_ENCAP | \
-				 MLX5_FLOW_ACTION_OF_PUSH_VLAN)
-
-#define MLX5_FLOW_DECAP_ACTIONS	(MLX5_FLOW_ACTION_VXLAN_DECAP | \
-				 MLX5_FLOW_ACTION_NVGRE_DECAP | \
-				 MLX5_FLOW_ACTION_RAW_DECAP | \
-				 MLX5_FLOW_ACTION_OF_POP_VLAN)
 
 #define MLX5_FLOW_MODIFY_HDR_ACTIONS (MLX5_FLOW_ACTION_SET_IPV4_SRC | \
 				      MLX5_FLOW_ACTION_SET_IPV4_DST | \
@@ -243,6 +231,9 @@ enum mlx5_feature_name {
 
 #define MLX5_FLOW_VLAN_ACTIONS (MLX5_FLOW_ACTION_OF_POP_VLAN | \
 				MLX5_FLOW_ACTION_OF_PUSH_VLAN)
+
+#define MLX5_FLOW_XCAP_ACTIONS (MLX5_FLOW_ACTION_ENCAP | MLX5_FLOW_ACTION_DECAP)
+
 #ifndef IPPROTO_MPLS
 #define IPPROTO_MPLS 137
 #endif
@@ -749,20 +740,20 @@ struct mlx5_flow_driver_ops {
 
 /* mlx5_flow.c */
 
-struct mlx5_flow_id_pool *mlx5_flow_id_pool_alloc(void);
+struct mlx5_flow_id_pool *mlx5_flow_id_pool_alloc(uint32_t max_id);
 void mlx5_flow_id_pool_release(struct mlx5_flow_id_pool *pool);
 uint32_t mlx5_flow_id_get(struct mlx5_flow_id_pool *pool, uint32_t *id);
 uint32_t mlx5_flow_id_release(struct mlx5_flow_id_pool *pool,
 			      uint32_t id);
 int mlx5_flow_group_to_table(const struct rte_flow_attr *attributes,
-			     bool external, uint32_t group, uint32_t *table,
-			     struct rte_flow_error *error);
+			     bool external, uint32_t group, bool fdb_def_rule,
+			     uint32_t *table, struct rte_flow_error *error);
 uint64_t mlx5_flow_hashfields_adjust(struct mlx5_flow *dev_flow, int tunnel,
 				     uint64_t layer_types,
 				     uint64_t hash_fields);
 uint32_t mlx5_flow_adjust_priority(struct rte_eth_dev *dev, int32_t priority,
 				   uint32_t subpriority);
-enum modify_reg mlx5_flow_get_reg_id(struct rte_eth_dev *dev,
+int mlx5_flow_get_reg_id(struct rte_eth_dev *dev,
 				     enum mlx5_feature_name feature,
 				     uint32_t id,
 				     struct rte_flow_error *error);

@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: BSD-3-Clause
 /* Copyright 2018 Mellanox Technologies, Ltd */
 
-#include <rte_flow_driver.h>
-#include <rte_malloc.h>
 #include <unistd.h>
 
-#include "mlx5.h"
-#include "mlx5_glue.h"
+#include <rte_errno.h>
+#include <rte_malloc.h>
+
 #include "mlx5_prm.h"
+#include "mlx5_devx_cmds.h"
+#include "mlx5_common_utils.h"
+
 
 /**
  * Allocate flow counters via devx interface.
@@ -140,7 +142,11 @@ struct mlx5_devx_obj *
 mlx5_devx_cmd_mkey_create(struct ibv_context *ctx,
 			  struct mlx5_devx_mkey_attr *attr)
 {
-	uint32_t in[MLX5_ST_SZ_DW(create_mkey_in)] = {0};
+	struct mlx5_klm *klm_array = attr->klm_array;
+	int klm_num = attr->klm_num;
+	int in_size_dw = MLX5_ST_SZ_DW(create_mkey_in) +
+		     (klm_num ? RTE_ALIGN(klm_num, 4) : 0) * MLX5_ST_SZ_DW(klm);
+	uint32_t in[in_size_dw];
 	uint32_t out[MLX5_ST_SZ_DW(create_mkey_out)] = {0};
 	void *mkc;
 	struct mlx5_devx_obj *mkey = rte_zmalloc("mkey", sizeof(*mkey), 0);
@@ -151,27 +157,52 @@ mlx5_devx_cmd_mkey_create(struct ibv_context *ctx,
 		rte_errno = ENOMEM;
 		return NULL;
 	}
+	memset(in, 0, in_size_dw * 4);
 	pgsize = sysconf(_SC_PAGESIZE);
-	translation_size = (RTE_ALIGN(attr->size, pgsize) * 8) / 16;
 	MLX5_SET(create_mkey_in, in, opcode, MLX5_CMD_OP_CREATE_MKEY);
+	mkc = MLX5_ADDR_OF(create_mkey_in, in, memory_key_mkey_entry);
+	if (klm_num > 0) {
+		int i;
+		uint8_t *klm = (uint8_t *)MLX5_ADDR_OF(create_mkey_in, in,
+						       klm_pas_mtt);
+		translation_size = RTE_ALIGN(klm_num, 4);
+		for (i = 0; i < klm_num; i++) {
+			MLX5_SET(klm, klm, byte_count, klm_array[i].byte_count);
+			MLX5_SET(klm, klm, mkey, klm_array[i].mkey);
+			MLX5_SET64(klm, klm, address, klm_array[i].address);
+			klm += MLX5_ST_SZ_BYTES(klm);
+		}
+		for (; i < (int)translation_size; i++) {
+			MLX5_SET(klm, klm, mkey, 0x0);
+			MLX5_SET64(klm, klm, address, 0x0);
+			klm += MLX5_ST_SZ_BYTES(klm);
+		}
+		MLX5_SET(mkc, mkc, access_mode_1_0, attr->log_entity_size ?
+			 MLX5_MKC_ACCESS_MODE_KLM_FBS :
+			 MLX5_MKC_ACCESS_MODE_KLM);
+		MLX5_SET(mkc, mkc, log_page_size, attr->log_entity_size);
+	} else {
+		translation_size = (RTE_ALIGN(attr->size, pgsize) * 8) / 16;
+		MLX5_SET(mkc, mkc, access_mode_1_0, MLX5_MKC_ACCESS_MODE_MTT);
+		MLX5_SET(mkc, mkc, log_page_size, rte_log2_u32(pgsize));
+	}
 	MLX5_SET(create_mkey_in, in, translations_octword_actual_size,
 		 translation_size);
 	MLX5_SET(create_mkey_in, in, mkey_umem_id, attr->umem_id);
-	mkc = MLX5_ADDR_OF(create_mkey_in, in, memory_key_mkey_entry);
+	MLX5_SET(create_mkey_in, in, pg_access, attr->pg_access);
 	MLX5_SET(mkc, mkc, lw, 0x1);
 	MLX5_SET(mkc, mkc, lr, 0x1);
-	MLX5_SET(mkc, mkc, access_mode_1_0, MLX5_MKC_ACCESS_MODE_MTT);
 	MLX5_SET(mkc, mkc, qpn, 0xffffff);
 	MLX5_SET(mkc, mkc, pd, attr->pd);
 	MLX5_SET(mkc, mkc, mkey_7_0, attr->umem_id & 0xFF);
 	MLX5_SET(mkc, mkc, translations_octword_size, translation_size);
 	MLX5_SET64(mkc, mkc, start_addr, attr->addr);
 	MLX5_SET64(mkc, mkc, len, attr->size);
-	MLX5_SET(mkc, mkc, log_page_size, rte_log2_u32(pgsize));
-	mkey->obj = mlx5_glue->devx_obj_create(ctx, in, sizeof(in), out,
+	mkey->obj = mlx5_glue->devx_obj_create(ctx, in, in_size_dw * 4, out,
 					       sizeof(out));
 	if (!mkey->obj) {
-		DRV_LOG(ERR, "Can't create mkey - error %d", errno);
+		DRV_LOG(ERR, "Can't create %sdirect mkey - error %d\n",
+			klm_num ? "an in" : "a ", errno);
 		rte_errno = errno;
 		rte_free(mkey);
 		return NULL;
@@ -283,6 +314,85 @@ error:
 }
 
 /**
+ * Query NIC vDPA attributes.
+ *
+ * @param[in] ctx
+ *   ibv contexts returned from mlx5dv_open_device.
+ * @param[out] vdpa_attr
+ *   vDPA Attributes structure to fill.
+ */
+static void
+mlx5_devx_cmd_query_hca_vdpa_attr(struct ibv_context *ctx,
+				  struct mlx5_hca_vdpa_attr *vdpa_attr)
+{
+	uint32_t in[MLX5_ST_SZ_DW(query_hca_cap_in)] = {0};
+	uint32_t out[MLX5_ST_SZ_DW(query_hca_cap_out)] = {0};
+	void *hcattr = MLX5_ADDR_OF(query_hca_cap_out, out, capability);
+	int status, syndrome, rc;
+
+	MLX5_SET(query_hca_cap_in, in, opcode, MLX5_CMD_OP_QUERY_HCA_CAP);
+	MLX5_SET(query_hca_cap_in, in, op_mod,
+		 MLX5_GET_HCA_CAP_OP_MOD_VDPA_EMULATION |
+		 MLX5_HCA_CAP_OPMOD_GET_CUR);
+	rc = mlx5_glue->devx_general_cmd(ctx, in, sizeof(in), out, sizeof(out));
+	status = MLX5_GET(query_hca_cap_out, out, status);
+	syndrome = MLX5_GET(query_hca_cap_out, out, syndrome);
+	if (rc || status) {
+		RTE_LOG(DEBUG, PMD, "Failed to query devx VDPA capabilities,"
+			" status %x, syndrome = %x", status, syndrome);
+		vdpa_attr->valid = 0;
+	} else {
+		vdpa_attr->valid = 1;
+		vdpa_attr->desc_tunnel_offload_type =
+			MLX5_GET(virtio_emulation_cap, hcattr,
+				 desc_tunnel_offload_type);
+		vdpa_attr->eth_frame_offload_type =
+			MLX5_GET(virtio_emulation_cap, hcattr,
+				 eth_frame_offload_type);
+		vdpa_attr->virtio_version_1_0 =
+			MLX5_GET(virtio_emulation_cap, hcattr,
+				 virtio_version_1_0);
+		vdpa_attr->tso_ipv4 = MLX5_GET(virtio_emulation_cap, hcattr,
+					       tso_ipv4);
+		vdpa_attr->tso_ipv6 = MLX5_GET(virtio_emulation_cap, hcattr,
+					       tso_ipv6);
+		vdpa_attr->tx_csum = MLX5_GET(virtio_emulation_cap, hcattr,
+					      tx_csum);
+		vdpa_attr->rx_csum = MLX5_GET(virtio_emulation_cap, hcattr,
+					      rx_csum);
+		vdpa_attr->event_mode = MLX5_GET(virtio_emulation_cap, hcattr,
+						 event_mode);
+		vdpa_attr->virtio_queue_type =
+			MLX5_GET(virtio_emulation_cap, hcattr,
+				 virtio_queue_type);
+		vdpa_attr->log_doorbell_stride =
+			MLX5_GET(virtio_emulation_cap, hcattr,
+				 log_doorbell_stride);
+		vdpa_attr->log_doorbell_bar_size =
+			MLX5_GET(virtio_emulation_cap, hcattr,
+				 log_doorbell_bar_size);
+		vdpa_attr->doorbell_bar_offset =
+			MLX5_GET64(virtio_emulation_cap, hcattr,
+				   doorbell_bar_offset);
+		vdpa_attr->max_num_virtio_queues =
+			MLX5_GET(virtio_emulation_cap, hcattr,
+				 max_num_virtio_queues);
+		vdpa_attr->umems[0].a = MLX5_GET(virtio_emulation_cap, hcattr,
+						 umem_1_buffer_param_a);
+		vdpa_attr->umems[0].b = MLX5_GET(virtio_emulation_cap, hcattr,
+						 umem_1_buffer_param_b);
+		vdpa_attr->umems[1].a = MLX5_GET(virtio_emulation_cap, hcattr,
+						 umem_2_buffer_param_a);
+		vdpa_attr->umems[1].b = MLX5_GET(virtio_emulation_cap, hcattr,
+						 umem_2_buffer_param_b);
+		vdpa_attr->umems[2].a = MLX5_GET(virtio_emulation_cap, hcattr,
+						 umem_3_buffer_param_a);
+		vdpa_attr->umems[2].b = MLX5_GET(virtio_emulation_cap, hcattr,
+						 umem_3_buffer_param_b);
+	}
+}
+
+/**
  * Query HCA attributes.
  * Using those attributes we can check on run time if the device
  * is having the required capabilities.
@@ -326,6 +436,8 @@ mlx5_devx_cmd_query_hca_attr(struct ibv_context *ctx,
 			MLX5_GET(cmd_hca_cap, hcattr, flow_counter_bulk_alloc);
 	attr->flow_counters_dump = MLX5_GET(cmd_hca_cap, hcattr,
 					    flow_counters_dump);
+	attr->log_max_rqt_size = MLX5_GET(cmd_hca_cap, hcattr,
+					  log_max_rqt_size);
 	attr->eswitch_manager = MLX5_GET(cmd_hca_cap, hcattr, eswitch_manager);
 	attr->hairpin = MLX5_GET(cmd_hca_cap, hcattr, hairpin);
 	attr->log_max_hairpin_queues = MLX5_GET(cmd_hca_cap, hcattr,
@@ -341,6 +453,9 @@ mlx5_devx_cmd_query_hca_attr(struct ibv_context *ctx,
 	attr->flex_parser_protocols = MLX5_GET(cmd_hca_cap, hcattr,
 					       flex_parser_protocols);
 	attr->qos.sup = MLX5_GET(cmd_hca_cap, hcattr, qos);
+	attr->vdpa.valid = !!(MLX5_GET64(cmd_hca_cap, hcattr,
+					 general_obj_types) &
+			      MLX5_GENERAL_OBJ_TYPES_CAP_VIRTQ_NET_Q);
 	if (attr->qos.sup) {
 		MLX5_SET(query_hca_cap_in, in, op_mod,
 			 MLX5_GET_HCA_CAP_OP_MOD_QOS_CAP |
@@ -362,7 +477,11 @@ mlx5_devx_cmd_query_hca_attr(struct ibv_context *ctx,
 				MLX5_GET(qos_cap, hcattr, log_max_flow_meter);
 		attr->qos.flow_meter_reg_c_ids =
 			MLX5_GET(qos_cap, hcattr, flow_meter_reg_id);
+		attr->qos.flow_meter_reg_share =
+			MLX5_GET(qos_cap, hcattr, flow_meter_reg_share);
 	}
+	if (attr->vdpa.valid)
+		mlx5_devx_cmd_query_hca_vdpa_attr(ctx, &attr->vdpa);
 	if (!attr->eth_net_offloads)
 		return 0;
 
@@ -729,6 +848,7 @@ mlx5_devx_cmd_create_rqt(struct ibv_context *ctx,
 	}
 	MLX5_SET(create_rqt_in, in, opcode, MLX5_CMD_OP_CREATE_RQT);
 	rqt_ctx = MLX5_ADDR_OF(create_rqt_in, in, rqt_context);
+	MLX5_SET(rqtc, rqt_ctx, list_q_type, rqt_attr->rq_type);
 	MLX5_SET(rqtc, rqt_ctx, rqt_max_size, rqt_attr->rqt_max_size);
 	MLX5_SET(rqtc, rqt_ctx, rqt_actual_size, rqt_attr->rqt_actual_size);
 	for (i = 0; i < rqt_attr->rqt_actual_size; i++)
@@ -743,6 +863,53 @@ mlx5_devx_cmd_create_rqt(struct ibv_context *ctx,
 	}
 	rqt->id = MLX5_GET(create_rqt_out, out, rqtn);
 	return rqt;
+}
+
+/**
+ * Modify RQT using DevX API.
+ *
+ * @param[in] rqt
+ *   Pointer to RQT DevX object structure.
+ * @param [in] rqt_attr
+ *   Pointer to RQT attributes structure.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+int
+mlx5_devx_cmd_modify_rqt(struct mlx5_devx_obj *rqt,
+			 struct mlx5_devx_rqt_attr *rqt_attr)
+{
+	uint32_t inlen = MLX5_ST_SZ_BYTES(modify_rqt_in) +
+			 rqt_attr->rqt_actual_size * sizeof(uint32_t);
+	uint32_t out[MLX5_ST_SZ_DW(modify_rqt_out)] = {0};
+	uint32_t *in = rte_calloc(__func__, 1, inlen, 0);
+	void *rqt_ctx;
+	int i;
+	int ret;
+
+	if (!in) {
+		DRV_LOG(ERR, "Failed to allocate RQT modify IN data.");
+		rte_errno = ENOMEM;
+		return -ENOMEM;
+	}
+	MLX5_SET(modify_rqt_in, in, opcode, MLX5_CMD_OP_MODIFY_RQT);
+	MLX5_SET(modify_rqt_in, in, rqtn, rqt->id);
+	MLX5_SET64(modify_rqt_in, in, modify_bitmask, 0x1);
+	rqt_ctx = MLX5_ADDR_OF(modify_rqt_in, in, rqt_context);
+	MLX5_SET(rqtc, rqt_ctx, list_q_type, rqt_attr->rq_type);
+	MLX5_SET(rqtc, rqt_ctx, rqt_max_size, rqt_attr->rqt_max_size);
+	MLX5_SET(rqtc, rqt_ctx, rqt_actual_size, rqt_attr->rqt_actual_size);
+	for (i = 0; i < rqt_attr->rqt_actual_size; i++)
+		MLX5_SET(rqtc, rqt_ctx, rq_num[i], rqt_attr->rq_list[i]);
+	ret = mlx5_glue->devx_obj_modify(rqt->obj, in, inlen, out, sizeof(out));
+	rte_free(in);
+	if (ret) {
+		DRV_LOG(ERR, "Failed to modify RQT using DevX.");
+		rte_errno = errno;
+		return -rte_errno;
+	}
+	return ret;
 }
 
 /**
@@ -934,8 +1101,12 @@ mlx5_devx_cmd_create_td(struct ibv_context *ctx)
 /**
  * Dump all flows to file.
  *
- * @param[in] sh
- *   Pointer to context.
+ * @param[in] fdb_domain
+ *   FDB domain.
+ * @param[in] rx_domain
+ *   RX domain.
+ * @param[in] tx_domain
+ *   TX domain.
  * @param[out] file
  *   Pointer to file stream.
  *
@@ -943,25 +1114,417 @@ mlx5_devx_cmd_create_td(struct ibv_context *ctx)
  *   0 on success, a nagative value otherwise.
  */
 int
-mlx5_devx_cmd_flow_dump(struct mlx5_ibv_shared *sh __rte_unused,
-			FILE *file __rte_unused)
+mlx5_devx_cmd_flow_dump(void *fdb_domain __rte_unused,
+			void *rx_domain __rte_unused,
+			void *tx_domain __rte_unused, FILE *file __rte_unused)
 {
 	int ret = 0;
 
 #ifdef HAVE_MLX5_DR_FLOW_DUMP
-	if (sh->fdb_domain) {
-		ret = mlx5_glue->dr_dump_domain(file, sh->fdb_domain);
+	if (fdb_domain) {
+		ret = mlx5_glue->dr_dump_domain(file, fdb_domain);
 		if (ret)
 			return ret;
 	}
-	assert(sh->rx_domain);
-	ret = mlx5_glue->dr_dump_domain(file, sh->rx_domain);
+	MLX5_ASSERT(rx_domain);
+	ret = mlx5_glue->dr_dump_domain(file, rx_domain);
 	if (ret)
 		return ret;
-	assert(sh->tx_domain);
-	ret = mlx5_glue->dr_dump_domain(file, sh->tx_domain);
+	MLX5_ASSERT(tx_domain);
+	ret = mlx5_glue->dr_dump_domain(file, tx_domain);
 #else
 	ret = ENOTSUP;
 #endif
 	return -ret;
+}
+
+/*
+ * Create CQ using DevX API.
+ *
+ * @param[in] ctx
+ *   ibv_context returned from mlx5dv_open_device.
+ * @param [in] attr
+ *   Pointer to CQ attributes structure.
+ *
+ * @return
+ *   The DevX object created, NULL otherwise and rte_errno is set.
+ */
+struct mlx5_devx_obj *
+mlx5_devx_cmd_create_cq(struct ibv_context *ctx, struct mlx5_devx_cq_attr *attr)
+{
+	uint32_t in[MLX5_ST_SZ_DW(create_cq_in)] = {0};
+	uint32_t out[MLX5_ST_SZ_DW(create_cq_out)] = {0};
+	struct mlx5_devx_obj *cq_obj = rte_zmalloc(__func__, sizeof(*cq_obj),
+						   0);
+	void *cqctx = MLX5_ADDR_OF(create_cq_in, in, cq_context);
+
+	if (!cq_obj) {
+		DRV_LOG(ERR, "Failed to allocate CQ object memory.");
+		rte_errno = ENOMEM;
+		return NULL;
+	}
+	MLX5_SET(create_cq_in, in, opcode, MLX5_CMD_OP_CREATE_CQ);
+	if (attr->db_umem_valid) {
+		MLX5_SET(cqc, cqctx, dbr_umem_valid, attr->db_umem_valid);
+		MLX5_SET(cqc, cqctx, dbr_umem_id, attr->db_umem_id);
+		MLX5_SET64(cqc, cqctx, dbr_addr, attr->db_umem_offset);
+	} else {
+		MLX5_SET64(cqc, cqctx, dbr_addr, attr->db_addr);
+	}
+	MLX5_SET(cqc, cqctx, cc, attr->use_first_only);
+	MLX5_SET(cqc, cqctx, oi, attr->overrun_ignore);
+	MLX5_SET(cqc, cqctx, log_cq_size, attr->log_cq_size);
+	MLX5_SET(cqc, cqctx, log_page_size, attr->log_page_size -
+		 MLX5_ADAPTER_PAGE_SHIFT);
+	MLX5_SET(cqc, cqctx, c_eqn, attr->eqn);
+	MLX5_SET(cqc, cqctx, uar_page, attr->uar_page_id);
+	if (attr->q_umem_valid) {
+		MLX5_SET(create_cq_in, in, cq_umem_valid, attr->q_umem_valid);
+		MLX5_SET(create_cq_in, in, cq_umem_id, attr->q_umem_id);
+		MLX5_SET64(create_cq_in, in, cq_umem_offset,
+			   attr->q_umem_offset);
+	}
+	cq_obj->obj = mlx5_glue->devx_obj_create(ctx, in, sizeof(in), out,
+						 sizeof(out));
+	if (!cq_obj->obj) {
+		rte_errno = errno;
+		DRV_LOG(ERR, "Failed to create CQ using DevX errno=%d.", errno);
+		rte_free(cq_obj);
+		return NULL;
+	}
+	cq_obj->id = MLX5_GET(create_cq_out, out, cqn);
+	return cq_obj;
+}
+
+/**
+ * Create VIRTQ using DevX API.
+ *
+ * @param[in] ctx
+ *   ibv_context returned from mlx5dv_open_device.
+ * @param [in] attr
+ *   Pointer to VIRTQ attributes structure.
+ *
+ * @return
+ *   The DevX object created, NULL otherwise and rte_errno is set.
+ */
+struct mlx5_devx_obj *
+mlx5_devx_cmd_create_virtq(struct ibv_context *ctx,
+			   struct mlx5_devx_virtq_attr *attr)
+{
+	uint32_t in[MLX5_ST_SZ_DW(create_virtq_in)] = {0};
+	uint32_t out[MLX5_ST_SZ_DW(general_obj_out_cmd_hdr)] = {0};
+	struct mlx5_devx_obj *virtq_obj = rte_zmalloc(__func__,
+						     sizeof(*virtq_obj), 0);
+	void *virtq = MLX5_ADDR_OF(create_virtq_in, in, virtq);
+	void *hdr = MLX5_ADDR_OF(create_virtq_in, in, hdr);
+	void *virtctx = MLX5_ADDR_OF(virtio_net_q, virtq, virtio_q_context);
+
+	if (!virtq_obj) {
+		DRV_LOG(ERR, "Failed to allocate virtq data.");
+		rte_errno = ENOMEM;
+		return NULL;
+	}
+	MLX5_SET(general_obj_in_cmd_hdr, hdr, opcode,
+		 MLX5_CMD_OP_CREATE_GENERAL_OBJECT);
+	MLX5_SET(general_obj_in_cmd_hdr, hdr, obj_type,
+		 MLX5_GENERAL_OBJ_TYPE_VIRTQ);
+	MLX5_SET16(virtio_net_q, virtq, hw_available_index,
+		   attr->hw_available_index);
+	MLX5_SET16(virtio_net_q, virtq, hw_used_index, attr->hw_used_index);
+	MLX5_SET16(virtio_net_q, virtq, tso_ipv4, attr->tso_ipv4);
+	MLX5_SET16(virtio_net_q, virtq, tso_ipv6, attr->tso_ipv6);
+	MLX5_SET16(virtio_net_q, virtq, tx_csum, attr->tx_csum);
+	MLX5_SET16(virtio_net_q, virtq, rx_csum, attr->rx_csum);
+	MLX5_SET16(virtio_q, virtctx, virtio_version_1_0,
+		   attr->virtio_version_1_0);
+	MLX5_SET16(virtio_q, virtctx, event_mode, attr->event_mode);
+	MLX5_SET(virtio_q, virtctx, event_qpn_or_msix, attr->qp_id);
+	MLX5_SET64(virtio_q, virtctx, desc_addr, attr->desc_addr);
+	MLX5_SET64(virtio_q, virtctx, used_addr, attr->used_addr);
+	MLX5_SET64(virtio_q, virtctx, available_addr, attr->available_addr);
+	MLX5_SET16(virtio_q, virtctx, queue_index, attr->queue_index);
+	MLX5_SET16(virtio_q, virtctx, queue_size, attr->q_size);
+	MLX5_SET(virtio_q, virtctx, virtio_q_mkey, attr->mkey);
+	MLX5_SET(virtio_q, virtctx, umem_1_id, attr->umems[0].id);
+	MLX5_SET(virtio_q, virtctx, umem_1_size, attr->umems[0].size);
+	MLX5_SET64(virtio_q, virtctx, umem_1_offset, attr->umems[0].offset);
+	MLX5_SET(virtio_q, virtctx, umem_2_id, attr->umems[1].id);
+	MLX5_SET(virtio_q, virtctx, umem_2_size, attr->umems[1].size);
+	MLX5_SET64(virtio_q, virtctx, umem_2_offset, attr->umems[1].offset);
+	MLX5_SET(virtio_q, virtctx, umem_3_id, attr->umems[2].id);
+	MLX5_SET(virtio_q, virtctx, umem_3_size, attr->umems[2].size);
+	MLX5_SET64(virtio_q, virtctx, umem_3_offset, attr->umems[2].offset);
+	MLX5_SET(virtio_net_q, virtq, tisn_or_qpn, attr->tis_id);
+	virtq_obj->obj = mlx5_glue->devx_obj_create(ctx, in, sizeof(in), out,
+						    sizeof(out));
+	if (!virtq_obj->obj) {
+		rte_errno = errno;
+		DRV_LOG(ERR, "Failed to create VIRTQ Obj using DevX.");
+		rte_free(virtq_obj);
+		return NULL;
+	}
+	virtq_obj->id = MLX5_GET(general_obj_out_cmd_hdr, out, obj_id);
+	return virtq_obj;
+}
+
+/**
+ * Modify VIRTQ using DevX API.
+ *
+ * @param[in] virtq_obj
+ *   Pointer to virtq object structure.
+ * @param [in] attr
+ *   Pointer to modify virtq attributes structure.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+int
+mlx5_devx_cmd_modify_virtq(struct mlx5_devx_obj *virtq_obj,
+			   struct mlx5_devx_virtq_attr *attr)
+{
+	uint32_t in[MLX5_ST_SZ_DW(create_virtq_in)] = {0};
+	uint32_t out[MLX5_ST_SZ_DW(general_obj_out_cmd_hdr)] = {0};
+	void *virtq = MLX5_ADDR_OF(create_virtq_in, in, virtq);
+	void *hdr = MLX5_ADDR_OF(create_virtq_in, in, hdr);
+	void *virtctx = MLX5_ADDR_OF(virtio_net_q, virtq, virtio_q_context);
+	int ret;
+
+	MLX5_SET(general_obj_in_cmd_hdr, hdr, opcode,
+		 MLX5_CMD_OP_MODIFY_GENERAL_OBJECT);
+	MLX5_SET(general_obj_in_cmd_hdr, hdr, obj_type,
+		 MLX5_GENERAL_OBJ_TYPE_VIRTQ);
+	MLX5_SET(general_obj_in_cmd_hdr, hdr, obj_id, virtq_obj->id);
+	MLX5_SET64(virtio_net_q, virtq, modify_field_select, attr->type);
+	MLX5_SET16(virtio_q, virtctx, queue_index, attr->queue_index);
+	switch (attr->type) {
+	case MLX5_VIRTQ_MODIFY_TYPE_STATE:
+		MLX5_SET16(virtio_net_q, virtq, state, attr->state);
+		break;
+	case MLX5_VIRTQ_MODIFY_TYPE_DIRTY_BITMAP_PARAMS:
+		MLX5_SET(virtio_net_q, virtq, dirty_bitmap_mkey,
+			 attr->dirty_bitmap_mkey);
+		MLX5_SET64(virtio_net_q, virtq, dirty_bitmap_addr,
+			 attr->dirty_bitmap_addr);
+		MLX5_SET(virtio_net_q, virtq, dirty_bitmap_size,
+			 attr->dirty_bitmap_size);
+		break;
+	case MLX5_VIRTQ_MODIFY_TYPE_DIRTY_BITMAP_DUMP_ENABLE:
+		MLX5_SET(virtio_net_q, virtq, dirty_bitmap_dump_enable,
+			 attr->dirty_bitmap_dump_enable);
+		break;
+	default:
+		rte_errno = EINVAL;
+		return -rte_errno;
+	}
+	ret = mlx5_glue->devx_obj_modify(virtq_obj->obj, in, sizeof(in),
+					 out, sizeof(out));
+	if (ret) {
+		DRV_LOG(ERR, "Failed to modify VIRTQ using DevX.");
+		rte_errno = errno;
+		return -errno;
+	}
+	return ret;
+}
+
+/**
+ * Query VIRTQ using DevX API.
+ *
+ * @param[in] virtq_obj
+ *   Pointer to virtq object structure.
+ * @param [in/out] attr
+ *   Pointer to virtq attributes structure.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+int
+mlx5_devx_cmd_query_virtq(struct mlx5_devx_obj *virtq_obj,
+			   struct mlx5_devx_virtq_attr *attr)
+{
+	uint32_t in[MLX5_ST_SZ_DW(general_obj_in_cmd_hdr)] = {0};
+	uint32_t out[MLX5_ST_SZ_DW(query_virtq_out)] = {0};
+	void *hdr = MLX5_ADDR_OF(query_virtq_out, in, hdr);
+	void *virtq = MLX5_ADDR_OF(query_virtq_out, out, virtq);
+	int ret;
+
+	MLX5_SET(general_obj_in_cmd_hdr, hdr, opcode,
+		 MLX5_CMD_OP_QUERY_GENERAL_OBJECT);
+	MLX5_SET(general_obj_in_cmd_hdr, hdr, obj_type,
+		 MLX5_GENERAL_OBJ_TYPE_VIRTQ);
+	MLX5_SET(general_obj_in_cmd_hdr, hdr, obj_id, virtq_obj->id);
+	ret = mlx5_glue->devx_obj_query(virtq_obj->obj, in, sizeof(in),
+					 out, sizeof(out));
+	if (ret) {
+		DRV_LOG(ERR, "Failed to modify VIRTQ using DevX.");
+		rte_errno = errno;
+		return -errno;
+	}
+	attr->hw_available_index = MLX5_GET16(virtio_net_q, virtq,
+					      hw_available_index);
+	attr->hw_used_index = MLX5_GET16(virtio_net_q, virtq, hw_used_index);
+	return ret;
+}
+
+/**
+ * Create QP using DevX API.
+ *
+ * @param[in] ctx
+ *   ibv_context returned from mlx5dv_open_device.
+ * @param [in] attr
+ *   Pointer to QP attributes structure.
+ *
+ * @return
+ *   The DevX object created, NULL otherwise and rte_errno is set.
+ */
+struct mlx5_devx_obj *
+mlx5_devx_cmd_create_qp(struct ibv_context *ctx,
+			struct mlx5_devx_qp_attr *attr)
+{
+	uint32_t in[MLX5_ST_SZ_DW(create_qp_in)] = {0};
+	uint32_t out[MLX5_ST_SZ_DW(create_qp_out)] = {0};
+	struct mlx5_devx_obj *qp_obj = rte_zmalloc(__func__, sizeof(*qp_obj),
+						   0);
+	void *qpc = MLX5_ADDR_OF(create_qp_in, in, qpc);
+
+	if (!qp_obj) {
+		DRV_LOG(ERR, "Failed to allocate QP data.");
+		rte_errno = ENOMEM;
+		return NULL;
+	}
+	MLX5_SET(create_qp_in, in, opcode, MLX5_CMD_OP_CREATE_QP);
+	MLX5_SET(qpc, qpc, st, MLX5_QP_ST_RC);
+	MLX5_SET(qpc, qpc, pd, attr->pd);
+	if (attr->uar_index) {
+		MLX5_SET(qpc, qpc, pm_state, MLX5_QP_PM_MIGRATED);
+		MLX5_SET(qpc, qpc, uar_page, attr->uar_index);
+		MLX5_SET(qpc, qpc, log_page_size, attr->log_page_size -
+			 MLX5_ADAPTER_PAGE_SHIFT);
+		if (attr->sq_size) {
+			MLX5_ASSERT(RTE_IS_POWER_OF_2(attr->sq_size));
+			MLX5_SET(qpc, qpc, cqn_snd, attr->cqn);
+			MLX5_SET(qpc, qpc, log_sq_size,
+				 rte_log2_u32(attr->sq_size));
+		} else {
+			MLX5_SET(qpc, qpc, no_sq, 1);
+		}
+		if (attr->rq_size) {
+			MLX5_ASSERT(RTE_IS_POWER_OF_2(attr->rq_size));
+			MLX5_SET(qpc, qpc, cqn_rcv, attr->cqn);
+			MLX5_SET(qpc, qpc, log_rq_stride, attr->log_rq_stride -
+				 MLX5_LOG_RQ_STRIDE_SHIFT);
+			MLX5_SET(qpc, qpc, log_rq_size,
+				 rte_log2_u32(attr->rq_size));
+			MLX5_SET(qpc, qpc, rq_type, MLX5_NON_ZERO_RQ);
+		} else {
+			MLX5_SET(qpc, qpc, rq_type, MLX5_ZERO_LEN_RQ);
+		}
+		if (attr->dbr_umem_valid) {
+			MLX5_SET(qpc, qpc, dbr_umem_valid,
+				 attr->dbr_umem_valid);
+			MLX5_SET(qpc, qpc, dbr_umem_id, attr->dbr_umem_id);
+		}
+		MLX5_SET64(qpc, qpc, dbr_addr, attr->dbr_address);
+		MLX5_SET64(create_qp_in, in, wq_umem_offset,
+			   attr->wq_umem_offset);
+		MLX5_SET(create_qp_in, in, wq_umem_id, attr->wq_umem_id);
+		MLX5_SET(create_qp_in, in, wq_umem_valid, 1);
+	} else {
+		/* Special QP to be managed by FW - no SQ\RQ\CQ\UAR\DB rec. */
+		MLX5_SET(qpc, qpc, rq_type, MLX5_ZERO_LEN_RQ);
+		MLX5_SET(qpc, qpc, no_sq, 1);
+	}
+	qp_obj->obj = mlx5_glue->devx_obj_create(ctx, in, sizeof(in), out,
+						 sizeof(out));
+	if (!qp_obj->obj) {
+		rte_errno = errno;
+		DRV_LOG(ERR, "Failed to create QP Obj using DevX.");
+		rte_free(qp_obj);
+		return NULL;
+	}
+	qp_obj->id = MLX5_GET(create_qp_out, out, qpn);
+	return qp_obj;
+}
+
+/**
+ * Modify QP using DevX API.
+ * Currently supports only force loop-back QP.
+ *
+ * @param[in] qp
+ *   Pointer to QP object structure.
+ * @param [in] qp_st_mod_op
+ *   The QP state modification operation.
+ * @param [in] remote_qp_id
+ *   The remote QP ID for MLX5_CMD_OP_INIT2RTR_QP operation.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+int
+mlx5_devx_cmd_modify_qp_state(struct mlx5_devx_obj *qp, uint32_t qp_st_mod_op,
+			      uint32_t remote_qp_id)
+{
+	union {
+		uint32_t rst2init[MLX5_ST_SZ_DW(rst2init_qp_in)];
+		uint32_t init2rtr[MLX5_ST_SZ_DW(init2rtr_qp_in)];
+		uint32_t rtr2rts[MLX5_ST_SZ_DW(rtr2rts_qp_in)];
+	} in;
+	union {
+		uint32_t rst2init[MLX5_ST_SZ_DW(rst2init_qp_out)];
+		uint32_t init2rtr[MLX5_ST_SZ_DW(init2rtr_qp_out)];
+		uint32_t rtr2rts[MLX5_ST_SZ_DW(rtr2rts_qp_out)];
+	} out;
+	void *qpc;
+	int ret;
+	unsigned int inlen;
+	unsigned int outlen;
+
+	memset(&in, 0, sizeof(in));
+	memset(&out, 0, sizeof(out));
+	MLX5_SET(rst2init_qp_in, &in, opcode, qp_st_mod_op);
+	switch (qp_st_mod_op) {
+	case MLX5_CMD_OP_RST2INIT_QP:
+		MLX5_SET(rst2init_qp_in, &in, qpn, qp->id);
+		qpc = MLX5_ADDR_OF(rst2init_qp_in, &in, qpc);
+		MLX5_SET(qpc, qpc, primary_address_path.vhca_port_num, 1);
+		MLX5_SET(qpc, qpc, rre, 1);
+		MLX5_SET(qpc, qpc, rwe, 1);
+		MLX5_SET(qpc, qpc, pm_state, MLX5_QP_PM_MIGRATED);
+		inlen = sizeof(in.rst2init);
+		outlen = sizeof(out.rst2init);
+		break;
+	case MLX5_CMD_OP_INIT2RTR_QP:
+		MLX5_SET(init2rtr_qp_in, &in, qpn, qp->id);
+		qpc = MLX5_ADDR_OF(init2rtr_qp_in, &in, qpc);
+		MLX5_SET(qpc, qpc, primary_address_path.fl, 1);
+		MLX5_SET(qpc, qpc, primary_address_path.vhca_port_num, 1);
+		MLX5_SET(qpc, qpc, mtu, 1);
+		MLX5_SET(qpc, qpc, log_msg_max, 30);
+		MLX5_SET(qpc, qpc, remote_qpn, remote_qp_id);
+		MLX5_SET(qpc, qpc, min_rnr_nak, 0);
+		inlen = sizeof(in.init2rtr);
+		outlen = sizeof(out.init2rtr);
+		break;
+	case MLX5_CMD_OP_RTR2RTS_QP:
+		qpc = MLX5_ADDR_OF(rtr2rts_qp_in, &in, qpc);
+		MLX5_SET(rtr2rts_qp_in, &in, qpn, qp->id);
+		MLX5_SET(qpc, qpc, primary_address_path.ack_timeout, 14);
+		MLX5_SET(qpc, qpc, log_ack_req_freq, 0);
+		MLX5_SET(qpc, qpc, retry_count, 7);
+		MLX5_SET(qpc, qpc, rnr_retry, 7);
+		inlen = sizeof(in.rtr2rts);
+		outlen = sizeof(out.rtr2rts);
+		break;
+	default:
+		DRV_LOG(ERR, "Invalid or unsupported QP modify op %u.",
+			qp_st_mod_op);
+		rte_errno = EINVAL;
+		return -rte_errno;
+	}
+	ret = mlx5_glue->devx_obj_modify(qp->obj, &in, inlen, &out, outlen);
+	if (ret) {
+		DRV_LOG(ERR, "Failed to modify QP using DevX.");
+		rte_errno = errno;
+		return -errno;
+	}
+	return ret;
 }

@@ -1497,10 +1497,12 @@ static void cmd_operate_detach_port_parsed(void *parsed_result,
 {
 	struct cmd_operate_detach_port_result *res = parsed_result;
 
-	if (!strcmp(res->keyword, "detach"))
+	if (!strcmp(res->keyword, "detach")) {
+		RTE_ETH_VALID_PORTID_OR_RET(res->port_id);
 		detach_port_device(res->port_id);
-	else
+	} else {
 		printf("Unknown parameter\n");
+	}
 }
 
 cmdline_parse_token_string_t cmd_operate_detach_port_port =
@@ -1539,7 +1541,7 @@ static void cmd_operate_detach_device_parsed(void *parsed_result,
 	struct cmd_operate_detach_device_result *res = parsed_result;
 
 	if (!strcmp(res->keyword, "detach"))
-		detach_device(res->identifier);
+		detach_devargs(res->identifier);
 	else
 		printf("Unknown parameter\n");
 }
@@ -5565,7 +5567,7 @@ cmd_show_bypass_config_parsed(void *parsed_result,
 	uint32_t event_mode;
 	uint32_t bypass_mode;
 	uint32_t timeout = bypass_timeout;
-	int i;
+	unsigned int i;
 
 	static const char * const timeouts[RTE_PMD_IXGBE_BYPASS_TMT_NUM] =
 		{"off", "1.5", "2", "3", "4", "8", "16", "32"};
@@ -5578,7 +5580,6 @@ cmd_show_bypass_config_parsed(void *parsed_result,
 		"OS/board off",
 		"power supply off",
 		"timeout"};
-	int num_events = (sizeof events) / (sizeof events[0]);
 
 	/* Display the bypass mode.*/
 	if (rte_pmd_ixgbe_bypass_state_show(port_id, &bypass_mode) != 0) {
@@ -5599,7 +5600,7 @@ cmd_show_bypass_config_parsed(void *parsed_result,
 	printf("\tbypass timeout = %s\n", timeouts[timeout]);
 
 	/* Display the bypass events and associated modes. */
-	for (i = RTE_PMD_IXGBE_BYPASS_EVENT_START; i < num_events; i++) {
+	for (i = RTE_PMD_IXGBE_BYPASS_EVENT_START; i < RTE_DIM(events); i++) {
 
 		if (rte_pmd_ixgbe_bypass_event_show(port_id, i, &event_mode)) {
 			printf("\tFailed to get bypass mode for event = %s\n",
@@ -7087,9 +7088,10 @@ cmd_priority_flow_ctrl_set_parsed(void *parsed_result,
 	 * the RTE_FC_RX_PAUSE, Respond to the pause frame at the Tx side.
 	 */
 	static enum rte_eth_fc_mode rx_tx_onoff_2_pfc_mode[2][2] = {
-			{RTE_FC_NONE, RTE_FC_RX_PAUSE}, {RTE_FC_TX_PAUSE, RTE_FC_FULL}
+		{RTE_FC_NONE, RTE_FC_TX_PAUSE}, {RTE_FC_RX_PAUSE, RTE_FC_FULL}
 	};
 
+	memset(&pfc_conf, 0, sizeof(struct rte_eth_pfc_conf));
 	rx_fc_enable = (!strncmp(res->rx_pfc_mode, "on",2)) ? 1 : 0;
 	tx_fc_enable = (!strncmp(res->tx_pfc_mode, "on",2)) ? 1 : 0;
 	pfc_conf.fc.mode       = rx_tx_onoff_2_pfc_mode[rx_fc_enable][tx_fc_enable];
@@ -18867,14 +18869,18 @@ cmd_config_dynf_specific_parsed(void *parsed_result,
 		return;
 	flag = rte_mbuf_dynflag_lookup(res->name, NULL);
 	if (flag <= 0) {
-		strcpy(desc_flag.name, res->name);
+		if (strlcpy(desc_flag.name, res->name,
+			    RTE_MBUF_DYN_NAMESIZE) >= RTE_MBUF_DYN_NAMESIZE) {
+			printf("Flag name too long\n");
+			return;
+		}
 		desc_flag.flags = 0;
 		flag = rte_mbuf_dynflag_register(&desc_flag);
 		if (flag < 0) {
 			printf("Can't register flag\n");
 			return;
 		}
-		strcpy(dynf_names[flag], res->name);
+		strcpy(dynf_names[flag], desc_flag.name);
 	}
 	old_port_flags = ports[res->port_id].mbuf_dynf;
 	if (!strcmp(res->value, "set")) {

@@ -130,6 +130,7 @@ F: meson_options.txt
 F: config/rte_config.h
 F: buildtools/call-sphinx-build.py
 F: buildtools/gen-pmdinfo-cfile.sh
+F: buildtools/list-dir-globs.py
 F: buildtools/map_to_def.py
 F: buildtools/symlink-drivers-solibs.sh
 
@@ -144,8 +145,11 @@ M: Neil Horman <nhorman@tuxdriver.com>
 F: lib/librte_eal/common/include/rte_compat.h
 F: lib/librte_eal/common/include/rte_function_versioning.h
 F: doc/guides/rel_notes/deprecation.rst
+F: devtools/check-abi.sh
 F: devtools/check-abi-version.sh
 F: devtools/check-symbol-change.sh
+F: devtools/gen-abi.sh
+F: devtools/libabigail.abignore
 F: devtools/update-abi.sh
 F: devtools/update_version_map_abi.py
 F: devtools/validate-abi.sh
@@ -381,11 +385,12 @@ F: lib/librte_ethdev/rte_flow*
 
 Traffic Management API - EXPERIMENTAL
 M: Cristian Dumitrescu <cristian.dumitrescu@intel.com>
-T: git://dpdk.org/next/dpdk-next-tm
+T: git://dpdk.org/next/dpdk-next-qos
 F: lib/librte_ethdev/rte_tm*
 
 Traffic Metering and Policing API - EXPERIMENTAL
 M: Cristian Dumitrescu <cristian.dumitrescu@intel.com>
+T: git://dpdk.org/next/dpdk-next-qos
 F: lib/librte_ethdev/rte_mtr*
 
 Baseband API - EXPERIMENTAL
@@ -430,6 +435,7 @@ T: git://dpdk.org/next/dpdk-next-eventdev
 F: lib/librte_eventdev/
 F: drivers/event/skeleton/
 F: app/test/test_eventdev.c
+F: examples/l3fwd/l3fwd_event*
 
 Eventdev Ethdev Rx Adapter API
 M: Nikhil Rao <nikhil.rao@intel.com>
@@ -724,6 +730,12 @@ F: drivers/net/octeontx2/
 F: doc/guides/nics/features/octeontx2*.ini
 F: doc/guides/nics/octeontx2.rst
 
+Marvell OCTEON TX2 - security
+M: Anoob Joseph <anoobj@marvell.com>
+T: git://dpdk.org/next/dpdk-next-crypto
+F: drivers/common/octeontx2/otx2_sec*
+F: drivers/net/octeontx2/otx2_ethdev_sec*
+
 Mellanox mlx4
 M: Matan Azrad <matan@mellanox.com>
 M: Shahaf Shuler <shahafs@mellanox.com>
@@ -737,6 +749,7 @@ M: Matan Azrad <matan@mellanox.com>
 M: Shahaf Shuler <shahafs@mellanox.com>
 M: Viacheslav Ovsiienko <viacheslavo@mellanox.com>
 T: git://dpdk.org/next/dpdk-next-net-mlx
+F: drivers/common/mlx5/
 F: drivers/net/mlx5/
 F: buildtools/options-ibverbs-static.sh
 F: doc/guides/nics/mlx5.rst
@@ -772,7 +785,6 @@ F: doc/guides/nics/features/nfb.ini
 
 Netronome nfp
 M: Heinrich Kuhn <heinrich.kuhn@netronome.com>
-M: Jan Gutter <jan.gutter@netronome.com>
 F: drivers/net/nfp/
 F: doc/guides/nics/nfp.rst
 F: doc/guides/nics/features/nfp*.ini
@@ -1102,6 +1114,13 @@ F: drivers/vdpa/ifc/
 F: doc/guides/vdpadevs/ifc.rst
 F: doc/guides/vdpadevs/features/ifcvf.ini
 
+Mellanox mlx5 vDPA
+M: Matan Azrad <matan@mellanox.com>
+M: Viacheslav Ovsiienko <viacheslavo@mellanox.com>
+F: drivers/vdpa/mlx5/
+F: doc/guides/vdpadevs/mlx5.rst
+F: doc/guides/vdpadevs/features/mlx5.ini
+
 
 Eventdev Drivers
 ----------------
@@ -1355,6 +1374,7 @@ F: lib/librte_rib/
 F: app/test/test_rib*
 F: lib/librte_fib/
 F: app/test/test_fib*
+F: app/test-fib/
 
 Traffic metering
 M: Cristian Dumitrescu <cristian.dumitrescu@intel.com>

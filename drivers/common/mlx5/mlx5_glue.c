@@ -8,26 +8,12 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
-
 /*
  * Not needed by this file; included to work around the lack of off_t
  * definition for mlx5dv.h with unpatched rdma-core versions.
  */
 #include <sys/types.h>
 
-/* Verbs headers do not support -pedantic. */
-#ifdef PEDANTIC
-#pragma GCC diagnostic ignored "-Wpedantic"
-#endif
-#include <infiniband/mlx5dv.h>
-#include <infiniband/verbs.h>
-#ifdef PEDANTIC
-#pragma GCC diagnostic error "-Wpedantic"
-#endif
-
-#include <rte_config.h>
-
-#include "mlx5_autoconf.h"
 #include "mlx5_glue.h"
 
 static int
@@ -236,6 +222,18 @@ static struct ibv_mr *
 mlx5_glue_reg_mr(struct ibv_pd *pd, void *addr, size_t length, int access)
 {
 	return ibv_reg_mr(pd, addr, length, access);
+}
+
+static struct ibv_mr *
+mlx5_glue_alloc_null_mr(struct ibv_pd *pd)
+{
+#ifdef HAVE_IBV_DEVX_OBJ
+	return ibv_alloc_null_mr(pd);
+#else
+	(void)pd;
+	errno = ENOTSUP;
+	return NULL;
+#endif
 }
 
 static int
@@ -1049,6 +1047,141 @@ mlx5_glue_dr_dump_domain(FILE *file, void *domain)
 #endif
 }
 
+static int
+mlx5_glue_devx_query_eqn(struct ibv_context *ctx, uint32_t cpus,
+			 uint32_t *eqn)
+{
+#ifdef HAVE_IBV_DEVX_OBJ
+	return mlx5dv_devx_query_eqn(ctx, cpus, eqn);
+#else
+	(void)ctx;
+	(void)cpus;
+	(void)eqn;
+	return -ENOTSUP;
+#endif
+}
+
+static struct mlx5dv_devx_event_channel *
+mlx5_glue_devx_create_event_channel(struct ibv_context *ctx, int flags)
+{
+#ifdef HAVE_IBV_DEVX_EVENT
+	return mlx5dv_devx_create_event_channel(ctx, flags);
+#else
+	(void)ctx;
+	(void)flags;
+	errno = ENOTSUP;
+	return NULL;
+#endif
+}
+
+static void
+mlx5_glue_devx_destroy_event_channel(struct mlx5dv_devx_event_channel *eventc)
+{
+#ifdef HAVE_IBV_DEVX_EVENT
+	mlx5dv_devx_destroy_event_channel(eventc);
+#else
+	(void)eventc;
+#endif
+}
+
+static int
+mlx5_glue_devx_subscribe_devx_event(struct mlx5dv_devx_event_channel *eventc,
+				    struct mlx5dv_devx_obj *obj,
+				    uint16_t events_sz, uint16_t events_num[],
+				    uint64_t cookie)
+{
+#ifdef HAVE_IBV_DEVX_EVENT
+	return mlx5dv_devx_subscribe_devx_event(eventc, obj, events_sz,
+						events_num, cookie);
+#else
+	(void)eventc;
+	(void)obj;
+	(void)events_sz;
+	(void)events_num;
+	(void)cookie;
+	return -ENOTSUP;
+#endif
+}
+
+static int
+mlx5_glue_devx_subscribe_devx_event_fd(struct mlx5dv_devx_event_channel *eventc,
+				       int fd, struct mlx5dv_devx_obj *obj,
+				       uint16_t event_num)
+{
+#ifdef HAVE_IBV_DEVX_EVENT
+	return mlx5dv_devx_subscribe_devx_event_fd(eventc, fd, obj, event_num);
+#else
+	(void)eventc;
+	(void)fd;
+	(void)obj;
+	(void)event_num;
+	return -ENOTSUP;
+#endif
+}
+
+static ssize_t
+mlx5_glue_devx_get_event(struct mlx5dv_devx_event_channel *eventc,
+			 struct mlx5dv_devx_async_event_hdr *event_data,
+			 size_t event_resp_len)
+{
+#ifdef HAVE_IBV_DEVX_EVENT
+	return mlx5dv_devx_get_event(eventc, event_data, event_resp_len);
+#else
+	(void)eventc;
+	(void)event_data;
+	(void)event_resp_len;
+	errno = ENOTSUP;
+	return -1;
+#endif
+}
+
+static struct mlx5dv_devx_uar *
+mlx5_glue_devx_alloc_uar(struct ibv_context *context, uint32_t flags)
+{
+#ifdef HAVE_IBV_DEVX_OBJ
+	return mlx5dv_devx_alloc_uar(context, flags);
+#else
+	(void)context;
+	(void)flags;
+	errno = ENOTSUP;
+	return NULL;
+#endif
+}
+
+static void
+mlx5_glue_devx_free_uar(struct mlx5dv_devx_uar *devx_uar)
+{
+#ifdef HAVE_IBV_DEVX_OBJ
+	mlx5dv_devx_free_uar(devx_uar);
+#else
+	(void)devx_uar;
+#endif
+}
+
+static struct mlx5dv_var *
+mlx5_glue_dv_alloc_var(struct ibv_context *context, uint32_t flags)
+{
+#ifdef HAVE_IBV_VAR
+	return mlx5dv_alloc_var(context, flags);
+#else
+	(void)context;
+	(void)flags;
+	errno = ENOTSUP;
+	return NULL;
+#endif
+}
+
+static void
+mlx5_glue_dv_free_var(struct mlx5dv_var *var)
+{
+#ifdef HAVE_IBV_VAR
+	mlx5dv_free_var(var);
+#else
+	(void)var;
+	errno = ENOTSUP;
+#endif
+}
+
 alignas(RTE_CACHE_LINE_SIZE)
 const struct mlx5_glue *mlx5_glue = &(const struct mlx5_glue){
 	.version = MLX5_GLUE_VERSION,
@@ -1082,6 +1215,7 @@ const struct mlx5_glue *mlx5_glue = &(const struct mlx5_glue){
 	.destroy_qp = mlx5_glue_destroy_qp,
 	.modify_qp = mlx5_glue_modify_qp,
 	.reg_mr = mlx5_glue_reg_mr,
+	.alloc_null_mr = mlx5_glue_alloc_null_mr,
 	.dereg_mr = mlx5_glue_dereg_mr,
 	.create_counter_set = mlx5_glue_create_counter_set,
 	.destroy_counter_set = mlx5_glue_destroy_counter_set,
@@ -1147,4 +1281,14 @@ const struct mlx5_glue *mlx5_glue = &(const struct mlx5_glue){
 	.devx_qp_query = mlx5_glue_devx_qp_query,
 	.devx_port_query = mlx5_glue_devx_port_query,
 	.dr_dump_domain = mlx5_glue_dr_dump_domain,
+	.devx_query_eqn = mlx5_glue_devx_query_eqn,
+	.devx_create_event_channel = mlx5_glue_devx_create_event_channel,
+	.devx_destroy_event_channel = mlx5_glue_devx_destroy_event_channel,
+	.devx_subscribe_devx_event = mlx5_glue_devx_subscribe_devx_event,
+	.devx_subscribe_devx_event_fd = mlx5_glue_devx_subscribe_devx_event_fd,
+	.devx_get_event = mlx5_glue_devx_get_event,
+	.devx_alloc_uar = mlx5_glue_devx_alloc_uar,
+	.devx_free_uar = mlx5_glue_devx_free_uar,
+	.dv_alloc_var = mlx5_glue_dv_alloc_var,
+	.dv_free_var = mlx5_glue_dv_free_var,
 };

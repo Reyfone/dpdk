@@ -9,8 +9,9 @@
 #include <rte_common.h>
 #include <rte_mbuf.h>
 
+#include <mlx5_prm.h>
+
 #include "mlx5_autoconf.h"
-#include "mlx5_prm.h"
 
 /* HW checksum offload capabilities of vectorized Tx. */
 #define MLX5_VEC_TX_CKSUM_OFFLOAD_CAP \
@@ -84,9 +85,10 @@ mlx5_rx_replenish_bulk_mbuf(struct mlx5_rxq_data *rxq, uint16_t n)
 		&((volatile struct mlx5_wqe_data_seg *)rxq->wqes)[elts_idx];
 	unsigned int i;
 
-	assert(n >= MLX5_VPMD_RXQ_RPLNSH_THRESH(q_n));
-	assert(n <= (uint16_t)(q_n - (rxq->rq_ci - rxq->rq_pi)));
-	assert(MLX5_VPMD_RXQ_RPLNSH_THRESH(q_n) > MLX5_VPMD_DESCS_PER_LOOP);
+	MLX5_ASSERT(n >= MLX5_VPMD_RXQ_RPLNSH_THRESH(q_n));
+	MLX5_ASSERT(n <= (uint16_t)(q_n - (rxq->rq_ci - rxq->rq_pi)));
+	MLX5_ASSERT(MLX5_VPMD_RXQ_RPLNSH_THRESH(q_n) >
+		    MLX5_VPMD_DESCS_PER_LOOP);
 	/* Not to cross queue end. */
 	n = RTE_MIN(n - MLX5_VPMD_DESCS_PER_LOOP, q_n - elts_idx);
 	if (rte_mempool_get_bulk(rxq->mp, (void *)elts, n) < 0) {

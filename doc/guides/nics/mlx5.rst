@@ -110,20 +110,17 @@ Limitations
     process. If the external memory is registered by primary process but has
     different virtual address in secondary process, unexpected error may happen.
 
-- Flow pattern without any specific vlan will match for vlan packets as well:
+- When using Verbs flow engine (``dv_flow_en`` = 0), flow pattern without any
+  specific VLAN will match for VLAN packets as well:
 
   When VLAN spec is not specified in the pattern, the matching rule will be created with VLAN as a wild card.
   Meaning, the flow rule::
 
         flow create 0 ingress pattern eth / vlan vid is 3 / ipv4 / end ...
 
-  Will only match vlan packets with vid=3. and the flow rules::
+  Will only match vlan packets with vid=3. and the flow rule::
 
         flow create 0 ingress pattern eth / ipv4 / end ...
-
-  Or::
-
-        flow create 0 ingress pattern eth / vlan / ipv4 / end ...
 
   Will match any ipv4 packet (VLAN included).
 
@@ -277,6 +274,10 @@ These options can be modified in the ``.config`` file.
    will enable ``CONFIG_RTE_LIBRTE_MLX5_PMD`` and set ``RTE_CACHE_LINE_SIZE`` to
    64. Default armv8a configuration of make build and meson build set it to 128
    then brings performance degradation.
+
+This option is available in meson:
+
+- ``ibverbs_link`` can be ``static``, ``shared``, or ``dlopen``.
 
 Environment variables
 ~~~~~~~~~~~~~~~~~~~~~
@@ -1165,10 +1166,6 @@ Supported hardware offloads
    | | set_ttl /           | |               | |               |
    | | set_mac_src /       | |               | |               |
    | | set_mac_dst)        | |               | |               |
-   | |                     | |               | |               |
-   | | (of_set_vlan_vid)   | | DPDK 19.11    | | DPDK 19.11    |
-   |                       | | OFED 4.7-1    | | OFED 4.7-1    |
-   |                       | | ConnectX-5    | | ConnectX-5    |
    +-----------------------+-----------------+-----------------+
    | Jump                  | | DPDK 19.05    | | DPDK 19.02    |
    |                       | | OFED 4.7-1    | | OFED 4.7-1    |
@@ -1188,8 +1185,8 @@ Supported hardware offloads
    | | VLAN                | | DPDK 19.11    | | DPDK 19.11    |
    | | (of_pop_vlan /      | | OFED 4.7-1    | | OFED 4.7-1    |
    | | of_push_vlan /      | | ConnectX-5    | | ConnectX-5    |
-   | | of_set_vlan_pcp /   |                 |                 |
-   | | of_set_vlan_vid)    |                 |                 |
+   | | of_set_vlan_pcp /   | |               | |               |
+   | | of_set_vlan_vid)    | |               | |               |
    +-----------------------+-----------------+-----------------+
    | Hairpin               | |               | | DPDK 19.11    |
    |                       | |     N/A       | | OFED 4.7-3    |

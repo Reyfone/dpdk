@@ -113,9 +113,13 @@
 #define CQ_TIMER_THRESH_DEFAULT	0xAULL /* ~1usec i.e (0xA * 100nsec) */
 #define CQ_TIMER_THRESH_MAX     255
 
+#define NIX_RSS_L3_L4_SRC_DST  (ETH_RSS_L3_SRC_ONLY | ETH_RSS_L3_DST_ONLY \
+				| ETH_RSS_L4_SRC_ONLY | ETH_RSS_L4_DST_ONLY)
+
 #define NIX_RSS_OFFLOAD		(ETH_RSS_PORT | ETH_RSS_IP | ETH_RSS_UDP |\
 				 ETH_RSS_TCP | ETH_RSS_SCTP | \
-				 ETH_RSS_TUNNEL | ETH_RSS_L2_PAYLOAD)
+				 ETH_RSS_TUNNEL | ETH_RSS_L2_PAYLOAD | \
+				 NIX_RSS_L3_L4_SRC_DST)
 
 #define NIX_TX_OFFLOAD_CAPA ( \
 	DEV_TX_OFFLOAD_MBUF_FAST_FREE	| \
@@ -281,6 +285,7 @@ struct otx2_eth_dev {
 	uintptr_t base;
 	uintptr_t lmt_addr;
 	uint16_t scalar_ena;
+	uint16_t rss_tag_as_xor;
 	uint16_t max_sqb_count;
 	uint16_t rx_offload_flags; /* Selected Rx offload flags(NIX_RX_*_F) */
 	uint64_t rx_offloads;
@@ -324,6 +329,8 @@ struct otx2_eth_dev {
 	bool mc_tbl_set;
 	struct otx2_nix_mc_filter_tbl mc_fltr_tbl;
 	bool sdp_link; /* SDP flag */
+	/* Inline IPsec params */
+	uint16_t ipsec_in_max_spi;
 } __rte_cache_aligned;
 
 struct otx2_eth_txq {
@@ -504,6 +511,8 @@ int otx2_cgx_mac_addr_set(struct rte_eth_dev *eth_dev,
 			  struct rte_ether_addr *addr);
 
 /* Flow Control */
+int otx2_nix_flow_ctrl_init(struct rte_eth_dev *eth_dev);
+
 int otx2_nix_flow_ctrl_get(struct rte_eth_dev *eth_dev,
 			   struct rte_eth_fc_conf *fc_conf);
 

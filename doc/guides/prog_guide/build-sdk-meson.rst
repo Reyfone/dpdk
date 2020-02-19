@@ -1,5 +1,5 @@
-INSTALLING DPDK USING THE MESON BUILD SYSTEM
----------------------------------------------
+Installing DPDK Using the meson build system
+============================================
 
 Summary
 --------
@@ -84,7 +84,10 @@ Project-specific options are passed used -Doption=value::
 
 	meson -Dmachine=default  # use builder-independent baseline -march
 
-Examples of setting the same options using meson configure::
+	meson -Ddisable_drivers=event/*,net/tap  # disable tap driver and all
+					# eventdev PMDs for a smaller build
+
+Examples of setting some of the same options using meson configure::
 
 	meson configure -Dwerror=true
 
@@ -162,7 +165,8 @@ command::
 
 For example if the target machine is arm64 we can use the following
 command::
-	meson arm-build --cross-file config/arm/arm64_armv8_linux_gcc
+
+        meson arm-build --cross-file config/arm/arm64_armv8_linux_gcc
 
 where config/arm/arm64_armv8_linux_gcc contains settings for the compilers
 and other build tools to be used, as well as characteristics of the target

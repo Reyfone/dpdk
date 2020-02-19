@@ -8,9 +8,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-
-#include "rte_byteorder.h"
-
 /* Verbs headers do not support -pedantic. */
 #ifdef PEDANTIC
 #pragma GCC diagnostic ignored "-Wpedantic"
@@ -20,6 +17,10 @@
 #ifdef PEDANTIC
 #pragma GCC diagnostic error "-Wpedantic"
 #endif
+
+#include <rte_byteorder.h>
+
+#include "mlx5_autoconf.h"
 
 #ifndef MLX5_GLUE_VERSION
 #define MLX5_GLUE_VERSION ""
@@ -65,6 +66,7 @@ enum mlx5dv_flow_table_type { flow_table_type = 0, };
 #ifndef HAVE_IBV_DEVX_OBJ
 struct mlx5dv_devx_obj;
 struct mlx5dv_devx_umem { uint32_t umem_id; };
+struct mlx5dv_devx_uar { void *reg_addr; void *base_addr; uint32_t page_id; };
 #endif
 
 #ifndef HAVE_IBV_DEVX_ASYNC
@@ -83,6 +85,17 @@ struct mlx5dv_devx_port;
 
 #ifndef HAVE_MLX5_DR_CREATE_ACTION_FLOW_METER
 struct mlx5dv_dr_flow_meter_attr;
+#endif
+
+#ifndef HAVE_IBV_DEVX_EVENT
+struct mlx5dv_devx_event_channel { int fd; };
+struct mlx5dv_devx_async_event_hdr;
+#define MLX5DV_DEVX_CREATE_EVENT_CHANNEL_FLAGS_OMIT_EV_DATA 1
+#endif
+
+#ifndef HAVE_IBV_VAR
+struct mlx5dv_var { uint32_t page_id; uint32_t length; off_t mmap_off;
+			uint64_t comp_mask; };
 #endif
 
 /* LIB_GLUE_VERSION must be updated every time this structure is modified. */
@@ -137,6 +150,7 @@ struct mlx5_glue {
 			 int attr_mask);
 	struct ibv_mr *(*reg_mr)(struct ibv_pd *pd, void *addr,
 				 size_t length, int access);
+	struct ibv_mr *(*alloc_null_mr)(struct ibv_pd *pd);
 	int (*dereg_mr)(struct ibv_mr *mr);
 	struct ibv_counter_set *(*create_counter_set)
 		(struct ibv_context *context,
@@ -222,6 +236,12 @@ struct mlx5_glue {
 	int (*dv_destroy_flow)(void *flow);
 	int (*dv_destroy_flow_matcher)(void *matcher);
 	struct ibv_context *(*dv_open_device)(struct ibv_device *device);
+	struct mlx5dv_var *(*dv_alloc_var)(struct ibv_context *context,
+					   uint32_t flags);
+	void (*dv_free_var)(struct mlx5dv_var *var);
+	struct mlx5dv_devx_uar *(*devx_alloc_uar)(struct ibv_context *context,
+						  uint32_t flags);
+	void (*devx_free_uar)(struct mlx5dv_devx_uar *devx_uar);
 	struct mlx5dv_devx_obj *(*devx_obj_create)
 					(struct ibv_context *ctx,
 					 const void *in, size_t inlen,
@@ -257,6 +277,27 @@ struct mlx5_glue {
 			       uint32_t port_num,
 			       struct mlx5dv_devx_port *mlx5_devx_port);
 	int (*dr_dump_domain)(FILE *file, void *domain);
+	int (*devx_query_eqn)(struct ibv_context *context, uint32_t cpus,
+			      uint32_t *eqn);
+	struct mlx5dv_devx_event_channel *(*devx_create_event_channel)
+				(struct ibv_context *context, int flags);
+	void (*devx_destroy_event_channel)
+			(struct mlx5dv_devx_event_channel *event_channel);
+	int (*devx_subscribe_devx_event)
+			(struct mlx5dv_devx_event_channel *event_channel,
+			 struct mlx5dv_devx_obj *obj,
+			 uint16_t events_sz,
+			 uint16_t events_num[],
+			 uint64_t cookie);
+	int (*devx_subscribe_devx_event_fd)
+			(struct mlx5dv_devx_event_channel *event_channel,
+			 int fd,
+			 struct mlx5dv_devx_obj *obj,
+			 uint16_t event_num);
+	ssize_t (*devx_get_event)
+			(struct mlx5dv_devx_event_channel *event_channel,
+			 struct mlx5dv_devx_async_event_hdr *event_data,
+			 size_t event_resp_len);
 };
 
 const struct mlx5_glue *mlx5_glue;

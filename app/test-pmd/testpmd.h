@@ -614,6 +614,9 @@ lcore_num(void)
 	rte_panic("lcore_id of current thread not found in fwd_lcores_cpuids\n");
 }
 
+void
+parse_fwd_portlist(const char *port);
+
 static inline struct fwd_lcore *
 current_fwd_lcore(void)
 {
@@ -810,7 +813,7 @@ void stop_port(portid_t pid);
 void close_port(portid_t pid);
 void reset_port(portid_t pid);
 void attach_port(char *identifier);
-void detach_device(char *identifier);
+void detach_devargs(char *identifier);
 void detach_port_device(portid_t port_id);
 int all_ports_stopped(void);
 int port_is_stopped(portid_t port_id);

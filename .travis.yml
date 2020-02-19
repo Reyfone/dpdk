@@ -43,6 +43,7 @@ env:
   - DEF_LIB="static"
   - DEF_LIB="shared"
   - DEF_LIB="shared" RUN_TESTS=1
+  - DEF_LIB="shared" RUN_TESTS_NO_HUGE=1
 
 matrix:
   include:
@@ -153,5 +154,19 @@ matrix:
         packages:
           - *extra_packages
           - *libabigail_build_packages
+  - env: DEF_LIB="shared" RUN_TESTS_NO_HUGE=1
+    arch: arm64
+    compiler: gcc
+    addons:
+      apt:
+        packages:
+          - *required_packages
+  - env: DEF_LIB="shared" RUN_TESTS_NO_HUGE=1
+    arch: arm64
+    compiler: clang
+    addons:
+      apt:
+        packages:
+          - *required_packages
 
 script: ./.ci/${TRAVIS_OS_NAME}-build.sh

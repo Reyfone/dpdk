@@ -54,8 +54,6 @@
 #define MLX5DV_DR_ACTION_FLAGS_ROOT_LEVEL 1
 #endif
 
-#define MLX5_ENCAPSULATION_DECISION_SIZE (sizeof(struct rte_flow_item_eth) + \
-					  sizeof(struct rte_flow_item_ipv4))
 /* VLAN header definitions */
 #define MLX5DV_FLOW_VLAN_PCP_SHIFT 13
 #define MLX5DV_FLOW_VLAN_PCP_MASK (0x7 << MLX5DV_FLOW_VLAN_PCP_SHIFT)
@@ -85,19 +83,74 @@ union flow_dv_attr {
  *   Pointer to item specification.
  * @param[out] attr
  *   Pointer to flow attributes structure.
+ * @param[in] dev_flow
+ *   Pointer to the sub flow.
+ * @param[in] tunnel_decap
+ *   Whether action is after tunnel decapsulation.
  */
 static void
-flow_dv_attr_init(const struct rte_flow_item *item, union flow_dv_attr *attr)
+flow_dv_attr_init(const struct rte_flow_item *item, union flow_dv_attr *attr,
+		  struct mlx5_flow *dev_flow, bool tunnel_decap)
 {
+	/*
+	 * If layers is already initialized, it means this dev_flow is the
+	 * suffix flow, the layers flags is set by the prefix flow. Need to
+	 * use the layer flags from prefix flow as the suffix flow may not
+	 * have the user defined items as the flow is split.
+	 */
+	if (dev_flow->layers) {
+		if (dev_flow->layers & MLX5_FLOW_LAYER_OUTER_L3_IPV4)
+			attr->ipv4 = 1;
+		else if (dev_flow->layers & MLX5_FLOW_LAYER_OUTER_L3_IPV6)
+			attr->ipv6 = 1;
+		if (dev_flow->layers & MLX5_FLOW_LAYER_OUTER_L4_TCP)
+			attr->tcp = 1;
+		else if (dev_flow->layers & MLX5_FLOW_LAYER_OUTER_L4_UDP)
+			attr->udp = 1;
+		attr->valid = 1;
+		return;
+	}
 	for (; item->type != RTE_FLOW_ITEM_TYPE_END; item++) {
+		uint8_t next_protocol = 0xff;
 		switch (item->type) {
+		case RTE_FLOW_ITEM_TYPE_GRE:
+		case RTE_FLOW_ITEM_TYPE_NVGRE:
+		case RTE_FLOW_ITEM_TYPE_VXLAN:
+		case RTE_FLOW_ITEM_TYPE_VXLAN_GPE:
+		case RTE_FLOW_ITEM_TYPE_GENEVE:
+		case RTE_FLOW_ITEM_TYPE_MPLS:
+			if (tunnel_decap)
+				attr->attr = 0;
+			break;
 		case RTE_FLOW_ITEM_TYPE_IPV4:
 			if (!attr->ipv6)
 				attr->ipv4 = 1;
+			if (item->mask != NULL &&
+			    ((const struct rte_flow_item_ipv4 *)
+			    item->mask)->hdr.next_proto_id)
+				next_protocol =
+				    ((const struct rte_flow_item_ipv4 *)
+				      (item->spec))->hdr.next_proto_id &
+				    ((const struct rte_flow_item_ipv4 *)
+				      (item->mask))->hdr.next_proto_id;
+			if ((next_protocol == IPPROTO_IPIP ||
+			    next_protocol == IPPROTO_IPV6) && tunnel_decap)
+				attr->attr = 0;
 			break;
 		case RTE_FLOW_ITEM_TYPE_IPV6:
 			if (!attr->ipv4)
 				attr->ipv6 = 1;
+			if (item->mask != NULL &&
+			    ((const struct rte_flow_item_ipv6 *)
+			    item->mask)->hdr.proto)
+				next_protocol =
+				    ((const struct rte_flow_item_ipv6 *)
+				      (item->spec))->hdr.proto &
+				    ((const struct rte_flow_item_ipv6 *)
+				      (item->mask))->hdr.proto;
+			if ((next_protocol == IPPROTO_IPIP ||
+			    next_protocol == IPPROTO_IPV6) && tunnel_decap)
+				attr->attr = 0;
 			break;
 		case RTE_FLOW_ITEM_TYPE_UDP:
 			if (!attr->tcp)
@@ -573,7 +626,7 @@ flow_dv_convert_action_modify_vlan_vid
 	const struct rte_flow_action_of_set_vlan_vid *conf =
 		(const struct rte_flow_action_of_set_vlan_vid *)(action->conf);
 	int i = resource->actions_num;
-	struct mlx5_modification_cmd *actions = &resource->actions[i];
+	struct mlx5_modification_cmd *actions = resource->actions;
 	struct field_modify_info *field = modify_vlan_out_first_vid;
 
 	if (i >= MLX5_MAX_MODIFY_NUM)
@@ -604,6 +657,10 @@ flow_dv_convert_action_modify_vlan_vid
  *   Pointer to rte_flow_item objects list.
  * @param[in] attr
  *   Pointer to flow attributes structure.
+ * @param[in] dev_flow
+ *   Pointer to the sub flow.
+ * @param[in] tunnel_decap
+ *   Whether action is after tunnel decapsulation.
  * @param[out] error
  *   Pointer to the error structure.
  *
@@ -615,8 +672,8 @@ flow_dv_convert_action_modify_tp
 			(struct mlx5_flow_dv_modify_hdr_resource *resource,
 			 const struct rte_flow_action *action,
 			 const struct rte_flow_item *items,
-			 union flow_dv_attr *attr,
-			 struct rte_flow_error *error)
+			 union flow_dv_attr *attr, struct mlx5_flow *dev_flow,
+			 bool tunnel_decap, struct rte_flow_error *error)
 {
 	const struct rte_flow_action_set_tp *conf =
 		(const struct rte_flow_action_set_tp *)(action->conf);
@@ -628,7 +685,7 @@ flow_dv_convert_action_modify_tp
 	struct field_modify_info *field;
 
 	if (!attr->valid)
-		flow_dv_attr_init(items, attr);
+		flow_dv_attr_init(items, attr, dev_flow, tunnel_decap);
 	if (attr->udp) {
 		memset(&udp, 0, sizeof(udp));
 		memset(&udp_mask, 0, sizeof(udp_mask));
@@ -678,6 +735,10 @@ flow_dv_convert_action_modify_tp
  *   Pointer to rte_flow_item objects list.
  * @param[in] attr
  *   Pointer to flow attributes structure.
+ * @param[in] dev_flow
+ *   Pointer to the sub flow.
+ * @param[in] tunnel_decap
+ *   Whether action is after tunnel decapsulation.
  * @param[out] error
  *   Pointer to the error structure.
  *
@@ -689,8 +750,8 @@ flow_dv_convert_action_modify_ttl
 			(struct mlx5_flow_dv_modify_hdr_resource *resource,
 			 const struct rte_flow_action *action,
 			 const struct rte_flow_item *items,
-			 union flow_dv_attr *attr,
-			 struct rte_flow_error *error)
+			 union flow_dv_attr *attr, struct mlx5_flow *dev_flow,
+			 bool tunnel_decap, struct rte_flow_error *error)
 {
 	const struct rte_flow_action_set_ttl *conf =
 		(const struct rte_flow_action_set_ttl *)(action->conf);
@@ -702,7 +763,7 @@ flow_dv_convert_action_modify_ttl
 	struct field_modify_info *field;
 
 	if (!attr->valid)
-		flow_dv_attr_init(items, attr);
+		flow_dv_attr_init(items, attr, dev_flow, tunnel_decap);
 	if (attr->ipv4) {
 		memset(&ipv4, 0, sizeof(ipv4));
 		memset(&ipv4_mask, 0, sizeof(ipv4_mask));
@@ -738,6 +799,10 @@ flow_dv_convert_action_modify_ttl
  *   Pointer to rte_flow_item objects list.
  * @param[in] attr
  *   Pointer to flow attributes structure.
+ * @param[in] dev_flow
+ *   Pointer to the sub flow.
+ * @param[in] tunnel_decap
+ *   Whether action is after tunnel decapsulation.
  * @param[out] error
  *   Pointer to the error structure.
  *
@@ -748,8 +813,8 @@ static int
 flow_dv_convert_action_modify_dec_ttl
 			(struct mlx5_flow_dv_modify_hdr_resource *resource,
 			 const struct rte_flow_item *items,
-			 union flow_dv_attr *attr,
-			 struct rte_flow_error *error)
+			 union flow_dv_attr *attr, struct mlx5_flow *dev_flow,
+			 bool tunnel_decap, struct rte_flow_error *error)
 {
 	struct rte_flow_item item;
 	struct rte_flow_item_ipv4 ipv4;
@@ -759,7 +824,7 @@ flow_dv_convert_action_modify_dec_ttl
 	struct field_modify_info *field;
 
 	if (!attr->valid)
-		flow_dv_attr_init(items, attr);
+		flow_dv_attr_init(items, attr, dev_flow, tunnel_decap);
 	if (attr->ipv4) {
 		memset(&ipv4, 0, sizeof(ipv4));
 		memset(&ipv4_mask, 0, sizeof(ipv4_mask));
@@ -1690,10 +1755,14 @@ flow_dev_get_vlan_info_from_items(const struct rte_flow_item *items,
 
 	if (items == NULL)
 		return;
-	for (; items->type != RTE_FLOW_ITEM_TYPE_END &&
-	       items->type != RTE_FLOW_ITEM_TYPE_VLAN; items++)
-		;
-	if (items->type == RTE_FLOW_ITEM_TYPE_VLAN) {
+	for (; items->type != RTE_FLOW_ITEM_TYPE_END; items++) {
+		int type = items->type;
+
+		if (type == RTE_FLOW_ITEM_TYPE_VLAN ||
+		    type == MLX5_RTE_FLOW_ITEM_TYPE_VLAN)
+			break;
+	}
+	if (items->type != RTE_FLOW_ITEM_TYPE_END) {
 		const struct rte_flow_item_vlan *vlan_m = items->mask;
 		const struct rte_flow_item_vlan *vlan_v = items->spec;
 
@@ -3096,10 +3165,14 @@ flow_dv_validate_action_modify_ipv4(const uint64_t action_flags,
 				    struct rte_flow_error *error)
 {
 	int ret = 0;
+	uint64_t layer;
 
 	ret = flow_dv_validate_action_modify_hdr(action_flags, action, error);
 	if (!ret) {
-		if (!(item_flags & MLX5_FLOW_LAYER_L3_IPV4))
+		layer = (action_flags & MLX5_FLOW_ACTION_DECAP) ?
+				 MLX5_FLOW_LAYER_INNER_L3_IPV4 :
+				 MLX5_FLOW_LAYER_OUTER_L3_IPV4;
+		if (!(item_flags & layer))
 			return rte_flow_error_set(error, EINVAL,
 						  RTE_FLOW_ERROR_TYPE_ACTION,
 						  NULL,
@@ -3130,10 +3203,14 @@ flow_dv_validate_action_modify_ipv6(const uint64_t action_flags,
 				    struct rte_flow_error *error)
 {
 	int ret = 0;
+	uint64_t layer;
 
 	ret = flow_dv_validate_action_modify_hdr(action_flags, action, error);
 	if (!ret) {
-		if (!(item_flags & MLX5_FLOW_LAYER_L3_IPV6))
+		layer = (action_flags & MLX5_FLOW_ACTION_DECAP) ?
+				 MLX5_FLOW_LAYER_INNER_L3_IPV6 :
+				 MLX5_FLOW_LAYER_OUTER_L3_IPV6;
+		if (!(item_flags & layer))
 			return rte_flow_error_set(error, EINVAL,
 						  RTE_FLOW_ERROR_TYPE_ACTION,
 						  NULL,
@@ -3164,10 +3241,14 @@ flow_dv_validate_action_modify_tp(const uint64_t action_flags,
 				  struct rte_flow_error *error)
 {
 	int ret = 0;
+	uint64_t layer;
 
 	ret = flow_dv_validate_action_modify_hdr(action_flags, action, error);
 	if (!ret) {
-		if (!(item_flags & MLX5_FLOW_LAYER_L4))
+		layer = (action_flags & MLX5_FLOW_ACTION_DECAP) ?
+				 MLX5_FLOW_LAYER_INNER_L4 :
+				 MLX5_FLOW_LAYER_OUTER_L4;
+		if (!(item_flags & layer))
 			return rte_flow_error_set(error, EINVAL,
 						  RTE_FLOW_ERROR_TYPE_ACTION,
 						  NULL, "no transport layer "
@@ -3199,10 +3280,14 @@ flow_dv_validate_action_modify_tcp_seq(const uint64_t action_flags,
 				       struct rte_flow_error *error)
 {
 	int ret = 0;
+	uint64_t layer;
 
 	ret = flow_dv_validate_action_modify_hdr(action_flags, action, error);
 	if (!ret) {
-		if (!(item_flags & MLX5_FLOW_LAYER_OUTER_L4_TCP))
+		layer = (action_flags & MLX5_FLOW_ACTION_DECAP) ?
+				 MLX5_FLOW_LAYER_INNER_L4_TCP :
+				 MLX5_FLOW_LAYER_OUTER_L4_TCP;
+		if (!(item_flags & layer))
 			return rte_flow_error_set(error, EINVAL,
 						  RTE_FLOW_ERROR_TYPE_ACTION,
 						  NULL, "no TCP item in"
@@ -3244,10 +3329,14 @@ flow_dv_validate_action_modify_tcp_ack(const uint64_t action_flags,
 				       struct rte_flow_error *error)
 {
 	int ret = 0;
+	uint64_t layer;
 
 	ret = flow_dv_validate_action_modify_hdr(action_flags, action, error);
 	if (!ret) {
-		if (!(item_flags & MLX5_FLOW_LAYER_OUTER_L4_TCP))
+		layer = (action_flags & MLX5_FLOW_ACTION_DECAP) ?
+				 MLX5_FLOW_LAYER_INNER_L4_TCP :
+				 MLX5_FLOW_LAYER_OUTER_L4_TCP;
+		if (!(item_flags & layer))
 			return rte_flow_error_set(error, EINVAL,
 						  RTE_FLOW_ERROR_TYPE_ACTION,
 						  NULL, "no TCP item in"
@@ -3288,10 +3377,14 @@ flow_dv_validate_action_modify_ttl(const uint64_t action_flags,
 				   struct rte_flow_error *error)
 {
 	int ret = 0;
+	uint64_t layer;
 
 	ret = flow_dv_validate_action_modify_hdr(action_flags, action, error);
 	if (!ret) {
-		if (!(item_flags & MLX5_FLOW_LAYER_L3))
+		layer = (action_flags & MLX5_FLOW_ACTION_DECAP) ?
+				 MLX5_FLOW_LAYER_INNER_L3 :
+				 MLX5_FLOW_LAYER_OUTER_L3;
+		if (!(item_flags & layer))
 			return rte_flow_error_set(error, EINVAL,
 						  RTE_FLOW_ERROR_TYPE_ACTION,
 						  NULL,
@@ -4621,6 +4714,7 @@ flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 							    error);
 			if (ret < 0)
 				return ret;
+			item_ipv6_proto = IPPROTO_ICMPV6;
 			last_item = MLX5_FLOW_LAYER_ICMP6;
 			break;
 		case RTE_FLOW_ITEM_TYPE_TAG:
@@ -5212,19 +5306,27 @@ flow_dv_translate_item_eth(void *matcher, void *key,
 	/* The value must be in the range of the mask. */
 	for (i = 0; i < sizeof(eth_m->dst); ++i)
 		l24_v[i] = eth_m->src.addr_bytes[i] & eth_v->src.addr_bytes[i];
-	MLX5_SET(fte_match_set_lyr_2_4, headers_m, ethertype,
-		 rte_be_to_cpu_16(eth_m->type));
-	l24_v = MLX5_ADDR_OF(fte_match_set_lyr_2_4, headers_v, ethertype);
-	*(uint16_t *)(l24_v) = eth_m->type & eth_v->type;
 	if (eth_v->type) {
 		/* When ethertype is present set mask for tagged VLAN. */
 		MLX5_SET(fte_match_set_lyr_2_4, headers_m, cvlan_tag, 1);
 		/* Set value for tagged VLAN if ethertype is 802.1Q. */
 		if (eth_v->type == RTE_BE16(RTE_ETHER_TYPE_VLAN) ||
-		    eth_v->type == RTE_BE16(RTE_ETHER_TYPE_QINQ))
+		    eth_v->type == RTE_BE16(RTE_ETHER_TYPE_QINQ)) {
 			MLX5_SET(fte_match_set_lyr_2_4, headers_v, cvlan_tag,
 				 1);
+			/* Return here to avoid setting match on ethertype. */
+			return;
+		}
 	}
+	/*
+	 * HW supports match on one Ethertype, the Ethertype following the last
+	 * VLAN tag of the packet (see PRM).
+	 * Set match on ethertype only if ETH header is not followed by VLAN.
+	 */
+	MLX5_SET(fte_match_set_lyr_2_4, headers_m, ethertype,
+		 rte_be_to_cpu_16(eth_m->type));
+	l24_v = MLX5_ADDR_OF(fte_match_set_lyr_2_4, headers_v, ethertype);
+	*(uint16_t *)(l24_v) = eth_m->type & eth_v->type;
 }
 
 /**
@@ -5298,6 +5400,8 @@ flow_dv_translate_item_vlan(struct mlx5_flow *dev_flow,
  *   Flow matcher value.
  * @param[in] item
  *   Flow pattern to translate.
+ * @param[in] item_flags
+ *   Bit-fields that holds the items detected until now.
  * @param[in] inner
  *   Item is inner pattern.
  * @param[in] group
@@ -5306,6 +5410,7 @@ flow_dv_translate_item_vlan(struct mlx5_flow *dev_flow,
 static void
 flow_dv_translate_item_ipv4(void *matcher, void *key,
 			    const struct rte_flow_item *item,
+			    const uint64_t item_flags,
 			    int inner, uint32_t group)
 {
 	const struct rte_flow_item_ipv4 *ipv4_m = item->mask;
@@ -5365,7 +5470,12 @@ flow_dv_translate_item_ipv4(void *matcher, void *key,
 		 ipv4_m->hdr.next_proto_id);
 	MLX5_SET(fte_match_set_lyr_2_4, headers_v, ip_protocol,
 		 ipv4_v->hdr.next_proto_id & ipv4_m->hdr.next_proto_id);
-	MLX5_SET(fte_match_set_lyr_2_4, headers_m, cvlan_tag, 1);
+	/*
+	 * On outer header (which must contains L2), or inner header with L2,
+	 * set cvlan_tag mask bit to mark this packet as untagged.
+	 */
+	if (!inner || item_flags & MLX5_FLOW_LAYER_INNER_L2)
+		MLX5_SET(fte_match_set_lyr_2_4, headers_m, cvlan_tag, 1);
 }
 
 /**
@@ -5377,6 +5487,8 @@ flow_dv_translate_item_ipv4(void *matcher, void *key,
  *   Flow matcher value.
  * @param[in] item
  *   Flow pattern to translate.
+ * @param[in] item_flags
+ *   Bit-fields that holds the items detected until now.
  * @param[in] inner
  *   Item is inner pattern.
  * @param[in] group
@@ -5385,6 +5497,7 @@ flow_dv_translate_item_ipv4(void *matcher, void *key,
 static void
 flow_dv_translate_item_ipv6(void *matcher, void *key,
 			    const struct rte_flow_item *item,
+			    const uint64_t item_flags,
 			    int inner, uint32_t group)
 {
 	const struct rte_flow_item_ipv6 *ipv6_m = item->mask;
@@ -5470,7 +5583,12 @@ flow_dv_translate_item_ipv6(void *matcher, void *key,
 		 ipv6_m->hdr.proto);
 	MLX5_SET(fte_match_set_lyr_2_4, headers_v, ip_protocol,
 		 ipv6_v->hdr.proto & ipv6_m->hdr.proto);
-	MLX5_SET(fte_match_set_lyr_2_4, headers_m, cvlan_tag, 1);
+	/*
+	 * On outer header (which must contains L2), or inner header with L2,
+	 * set cvlan_tag mask bit to mark this packet as untagged.
+	 */
+	if (!inner || item_flags & MLX5_FLOW_LAYER_INNER_L2)
+		MLX5_SET(fte_match_set_lyr_2_4, headers_m, cvlan_tag, 1);
 }
 
 /**
@@ -5593,13 +5711,13 @@ flow_dv_translate_item_gre_key(void *matcher, void *key,
 	void *misc_v = MLX5_ADDR_OF(fte_match_param, key, misc_parameters);
 	rte_be32_t gre_key_default_mask = RTE_BE32(UINT32_MAX);
 
+	/* GRE K bit must be on and should already be validated */
+	MLX5_SET(fte_match_set_misc, misc_m, gre_k_present, 1);
+	MLX5_SET(fte_match_set_misc, misc_v, gre_k_present, 1);
 	if (!key_v)
 		return;
 	if (!key_m)
 		key_m = &gre_key_default_mask;
-	/* GRE K bit must be on and should already be validated */
-	MLX5_SET(fte_match_set_misc, misc_m, gre_k_present, 1);
-	MLX5_SET(fte_match_set_misc, misc_v, gre_k_present, 1);
 	MLX5_SET(fte_match_set_misc, misc_m, gre_key_h,
 		 rte_be_to_cpu_32(*key_m) >> 8);
 	MLX5_SET(fte_match_set_misc, misc_v, gre_key_h,
@@ -6403,6 +6521,12 @@ flow_dv_translate_item_icmp6(void *matcher, void *key,
 		return;
 	if (!icmp6_m)
 		icmp6_m = &rte_flow_item_icmp6_mask;
+	/*
+	 * Force flow only to match the non-fragmented IPv6 ICMPv6 packets.
+	 * If only the protocol is specified, no need to match the frag.
+	 */
+	MLX5_SET(fte_match_set_lyr_2_4, headers_m, frag, 1);
+	MLX5_SET(fte_match_set_lyr_2_4, headers_v, frag, 0);
 	MLX5_SET(fte_match_set_misc3, misc3_m, icmpv6_type, icmp6_m->type);
 	MLX5_SET(fte_match_set_misc3, misc3_v, icmpv6_type,
 		 icmp6_v->type & icmp6_m->type);
@@ -6450,6 +6574,12 @@ flow_dv_translate_item_icmp(void *matcher, void *key,
 		return;
 	if (!icmp_m)
 		icmp_m = &rte_flow_item_icmp_mask;
+	/*
+	 * Force flow only to match the non-fragmented IPv4 ICMP packets.
+	 * If only the protocol is specified, no need to match the frag.
+	 */
+	MLX5_SET(fte_match_set_lyr_2_4, headers_m, frag, 1);
+	MLX5_SET(fte_match_set_lyr_2_4, headers_v, frag, 0);
 	MLX5_SET(fte_match_set_misc3, misc3_m, icmp_type,
 		 icmp_m->hdr.icmp_type);
 	MLX5_SET(fte_match_set_misc3, misc3_v, icmp_type,
@@ -7426,7 +7556,8 @@ cnt_err:
 		case RTE_FLOW_ACTION_TYPE_SET_TP_DST:
 			if (flow_dv_convert_action_modify_tp
 					(mhdr_res, actions, items,
-					 &flow_attr, error))
+					 &flow_attr, dev_flow, !!(action_flags &
+					 MLX5_FLOW_ACTION_DECAP), error))
 				return -rte_errno;
 			action_flags |= actions->type ==
 					RTE_FLOW_ACTION_TYPE_SET_TP_SRC ?
@@ -7435,14 +7566,17 @@ cnt_err:
 			break;
 		case RTE_FLOW_ACTION_TYPE_DEC_TTL:
 			if (flow_dv_convert_action_modify_dec_ttl
-					(mhdr_res, items, &flow_attr, error))
+					(mhdr_res, items, &flow_attr, dev_flow,
+					 !!(action_flags &
+					 MLX5_FLOW_ACTION_DECAP), error))
 				return -rte_errno;
 			action_flags |= MLX5_FLOW_ACTION_DEC_TTL;
 			break;
 		case RTE_FLOW_ACTION_TYPE_SET_TTL:
 			if (flow_dv_convert_action_modify_ttl
-					(mhdr_res, actions, items,
-					 &flow_attr, error))
+					(mhdr_res, actions, items, &flow_attr,
+					 dev_flow, !!(action_flags &
+					 MLX5_FLOW_ACTION_DECAP), error))
 				return -rte_errno;
 			action_flags |= MLX5_FLOW_ACTION_SET_TTL;
 			break;
@@ -7561,7 +7695,7 @@ cnt_err:
 			mlx5_flow_tunnel_ip_check(items, next_protocol,
 						  &item_flags, &tunnel);
 			flow_dv_translate_item_ipv4(match_mask, match_value,
-						    items, tunnel,
+						    items, item_flags, tunnel,
 						    dev_flow->group);
 			matcher.priority = MLX5_PRIORITY_MAP_L3;
 			last_item = tunnel ? MLX5_FLOW_LAYER_INNER_L3_IPV4 :
@@ -7584,7 +7718,7 @@ cnt_err:
 			mlx5_flow_tunnel_ip_check(items, next_protocol,
 						  &item_flags, &tunnel);
 			flow_dv_translate_item_ipv6(match_mask, match_value,
-						    items, tunnel,
+						    items, item_flags, tunnel,
 						    dev_flow->group);
 			matcher.priority = MLX5_PRIORITY_MAP_L3;
 			last_item = tunnel ? MLX5_FLOW_LAYER_INNER_L3_IPV6 :
@@ -7620,6 +7754,8 @@ cnt_err:
 		case RTE_FLOW_ITEM_TYPE_GRE:
 			flow_dv_translate_item_gre(match_mask, match_value,
 						   items, tunnel);
+			matcher.priority = flow->rss.level >= 2 ?
+				    MLX5_PRIORITY_MAP_L2 : MLX5_PRIORITY_MAP_L4;
 			last_item = MLX5_FLOW_LAYER_GRE;
 			break;
 		case RTE_FLOW_ITEM_TYPE_GRE_KEY:
@@ -7630,27 +7766,37 @@ cnt_err:
 		case RTE_FLOW_ITEM_TYPE_NVGRE:
 			flow_dv_translate_item_nvgre(match_mask, match_value,
 						     items, tunnel);
+			matcher.priority = flow->rss.level >= 2 ?
+				    MLX5_PRIORITY_MAP_L2 : MLX5_PRIORITY_MAP_L4;
 			last_item = MLX5_FLOW_LAYER_GRE;
 			break;
 		case RTE_FLOW_ITEM_TYPE_VXLAN:
 			flow_dv_translate_item_vxlan(match_mask, match_value,
 						     items, tunnel);
+			matcher.priority = flow->rss.level >= 2 ?
+				    MLX5_PRIORITY_MAP_L2 : MLX5_PRIORITY_MAP_L4;
 			last_item = MLX5_FLOW_LAYER_VXLAN;
 			break;
 		case RTE_FLOW_ITEM_TYPE_VXLAN_GPE:
 			flow_dv_translate_item_vxlan_gpe(match_mask,
 							 match_value, items,
 							 tunnel);
+			matcher.priority = flow->rss.level >= 2 ?
+				    MLX5_PRIORITY_MAP_L2 : MLX5_PRIORITY_MAP_L4;
 			last_item = MLX5_FLOW_LAYER_VXLAN_GPE;
 			break;
 		case RTE_FLOW_ITEM_TYPE_GENEVE:
 			flow_dv_translate_item_geneve(match_mask, match_value,
 						      items, tunnel);
+			matcher.priority = flow->rss.level >= 2 ?
+				    MLX5_PRIORITY_MAP_L2 : MLX5_PRIORITY_MAP_L4;
 			last_item = MLX5_FLOW_LAYER_GENEVE;
 			break;
 		case RTE_FLOW_ITEM_TYPE_MPLS:
 			flow_dv_translate_item_mpls(match_mask, match_value,
 						    items, last_item, tunnel);
+			matcher.priority = flow->rss.level >= 2 ?
+				    MLX5_PRIORITY_MAP_L2 : MLX5_PRIORITY_MAP_L4;
 			last_item = MLX5_FLOW_LAYER_MPLS;
 			break;
 		case RTE_FLOW_ITEM_TYPE_MARK:
@@ -7692,6 +7838,8 @@ cnt_err:
 		case RTE_FLOW_ITEM_TYPE_GTP:
 			flow_dv_translate_item_gtp(match_mask, match_value,
 						   items, tunnel);
+			matcher.priority = flow->rss.level >= 2 ?
+				    MLX5_PRIORITY_MAP_L2 : MLX5_PRIORITY_MAP_L4;
 			last_item = MLX5_FLOW_LAYER_GTP;
 			break;
 		default:
@@ -7716,7 +7864,11 @@ cnt_err:
 	MLX5_ASSERT(!flow_dv_check_valid_spec(matcher.mask.buf,
 					      dev_flow->dv.value.buf));
 #endif
-	dev_flow->layers = item_flags;
+	/*
+	 * Layers may be already initialized from prefix flow if this dev_flow
+	 * is the suffix flow.
+	 */
+	dev_flow->layers |= item_flags;
 	if (action_flags & MLX5_FLOW_ACTION_RSS)
 		flow_dv_hashfields_set(dev_flow);
 	/* Register matcher. */

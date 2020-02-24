@@ -229,7 +229,8 @@ static int ixgbe_dev_interrupt_get_status(struct rte_eth_dev *dev);
 static int ixgbe_dev_interrupt_action(struct rte_eth_dev *dev);
 static void ixgbe_dev_interrupt_handler(void *param);
 static void ixgbe_dev_interrupt_delayed_handler(void *param);
-static void ixgbe_dev_setup_link_alarm_handler(void *param);
+static void *ixgbe_dev_setup_link_thread_handler(void *param);
+static void ixgbe_dev_cancel_link_thread(struct rte_eth_dev *dev);
 
 static int ixgbe_add_rar(struct rte_eth_dev *dev,
 			struct rte_ether_addr *mac_addr,
@@ -1078,6 +1079,7 @@ ixgbe_swfw_lock_reset(struct ixgbe_hw *hw)
 static int
 eth_ixgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 {
+	struct ixgbe_adapter *ad = eth_dev->data->dev_private;
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
 	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
 	struct ixgbe_hw *hw =
@@ -1129,6 +1131,7 @@ eth_ixgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 		return 0;
 	}
 
+	rte_atomic32_clear(&ad->link_thread_running);
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
 
 	/* Vendor and Device ID need to be set before init of shared code */
@@ -1173,8 +1176,8 @@ eth_ixgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 	memset(dcb_config, 0, sizeof(struct ixgbe_dcb_config));
 	ixgbe_dcb_init(hw, dcb_config);
 	/* Get Hardware Flow Control setting */
-	hw->fc.requested_mode = ixgbe_fc_full;
-	hw->fc.current_mode = ixgbe_fc_full;
+	hw->fc.requested_mode = ixgbe_fc_none;
+	hw->fc.current_mode = ixgbe_fc_none;
 	hw->fc.pause_time = IXGBE_FC_PAUSE;
 	for (i = 0; i < IXGBE_DCB_MAX_TRAFFIC_CLASS; i++) {
 		hw->fc.low_water[i] = IXGBE_FC_LO;
@@ -1567,6 +1570,7 @@ eth_ixgbevf_dev_init(struct rte_eth_dev *eth_dev)
 {
 	int diag;
 	uint32_t tc, tcs;
+	struct ixgbe_adapter *ad = eth_dev->data->dev_private;
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(eth_dev);
 	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
 	struct ixgbe_hw *hw =
@@ -1607,6 +1611,7 @@ eth_ixgbevf_dev_init(struct rte_eth_dev *eth_dev)
 		return 0;
 	}
 
+	rte_atomic32_clear(&ad->link_thread_running);
 	ixgbevf_parse_devargs(eth_dev->data->dev_private,
 			      pci_dev->device.devargs);
 
@@ -2533,6 +2538,39 @@ ixgbe_set_vf_rate_limit(struct rte_eth_dev *dev, uint16_t vf,
 	return 0;
 }
 
+static int
+ixgbe_flow_ctrl_enable(struct rte_eth_dev *dev, struct ixgbe_hw *hw)
+{
+	struct ixgbe_adapter *adapter = dev->data->dev_private;
+	int err;
+	uint32_t mflcn;
+
+	err = ixgbe_fc_enable(hw);
+
+	/* Not negotiated is not an error case */
+	if (err == IXGBE_SUCCESS || err == IXGBE_ERR_FC_NOT_NEGOTIATED) {
+		/*
+		 *check if we want to forward MAC frames - driver doesn't
+		 *have native capability to do that,
+		 *so we'll write the registers ourselves
+		 */
+
+		mflcn = IXGBE_READ_REG(hw, IXGBE_MFLCN);
+
+		/* set or clear MFLCN.PMCF bit depending on configuration */
+		if (adapter->mac_ctrl_frame_fwd != 0)
+			mflcn |= IXGBE_MFLCN_PMCF;
+		else
+			mflcn &= ~IXGBE_MFLCN_PMCF;
+
+		IXGBE_WRITE_REG(hw, IXGBE_MFLCN, mflcn);
+		IXGBE_WRITE_FLUSH(hw);
+
+		return 0;
+	}
+	return err;
+}
+
 /*
  * Configure device link speed and setup link.
  * It returns 0 on success.
@@ -2563,7 +2601,7 @@ ixgbe_dev_start(struct rte_eth_dev *dev)
 	PMD_INIT_FUNC_TRACE();
 
 	/* Stop the link setup handler before resetting the HW. */
-	rte_eal_alarm_cancel(ixgbe_dev_setup_link_alarm_handler, dev);
+	ixgbe_dev_cancel_link_thread(dev);
 
 	/* disable uio/vfio intr/eventfd mapping */
 	rte_intr_disable(intr_handle);
@@ -2658,6 +2696,12 @@ ixgbe_dev_start(struct rte_eth_dev *dev)
 	}
 
 	ixgbe_restore_statistics_mapping(dev);
+
+	err = ixgbe_flow_ctrl_enable(dev, hw);
+	if (err < 0) {
+		PMD_INIT_LOG(ERR, "enable flow ctrl err");
+		goto error;
+	}
 
 	err = ixgbe_dev_rxtx_start(dev);
 	if (err < 0) {
@@ -2844,7 +2888,7 @@ ixgbe_dev_stop(struct rte_eth_dev *dev)
 
 	PMD_INIT_FUNC_TRACE();
 
-	rte_eal_alarm_cancel(ixgbe_dev_setup_link_alarm_handler, dev);
+	ixgbe_dev_cancel_link_thread(dev);
 
 	/* disable interrupts */
 	ixgbe_disable_intr(hw);
@@ -2894,6 +2938,8 @@ ixgbe_dev_stop(struct rte_eth_dev *dev)
 	tm_conf->committed = false;
 
 	adapter->rss_reta_updated = 0;
+
+	adapter->mac_ctrl_frame_fwd = 0;
 
 	hw->adapter_stopped = true;
 }
@@ -4098,9 +4144,23 @@ out:
 }
 
 static void
-ixgbe_dev_setup_link_alarm_handler(void *param)
+ixgbe_dev_cancel_link_thread(struct rte_eth_dev *dev)
+{
+	struct ixgbe_adapter *ad = dev->data->dev_private;
+	void *retval;
+
+	if (rte_atomic32_read(&ad->link_thread_running)) {
+		pthread_cancel(ad->link_thread_tid);
+		pthread_join(ad->link_thread_tid, &retval);
+		rte_atomic32_clear(&ad->link_thread_running);
+	}
+}
+
+static void *
+ixgbe_dev_setup_link_thread_handler(void *param)
 {
 	struct rte_eth_dev *dev = (struct rte_eth_dev *)param;
+	struct ixgbe_adapter *ad = dev->data->dev_private;
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct ixgbe_interrupt *intr =
 		IXGBE_DEV_PRIVATE_TO_INTR(dev->data->dev_private);
@@ -4114,6 +4174,8 @@ ixgbe_dev_setup_link_alarm_handler(void *param)
 	ixgbe_setup_link(hw, speed, true);
 
 	intr->flags &= ~IXGBE_FLAG_NEED_LINK_CONFIG;
+	rte_atomic32_clear(&ad->link_thread_running);
+	return NULL;
 }
 
 /*
@@ -4155,6 +4217,7 @@ ixgbe_dev_link_update_share(struct rte_eth_dev *dev,
 			    int wait_to_complete, int vf)
 {
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct ixgbe_adapter *ad = dev->data->dev_private;
 	struct rte_eth_link link;
 	ixgbe_link_speed link_speed = IXGBE_LINK_SPEED_UNKNOWN;
 	struct ixgbe_interrupt *intr =
@@ -4200,8 +4263,20 @@ ixgbe_dev_link_update_share(struct rte_eth_dev *dev,
 	if (link_up == 0) {
 		if (ixgbe_get_media_type(hw) == ixgbe_media_type_fiber) {
 			intr->flags |= IXGBE_FLAG_NEED_LINK_CONFIG;
-			rte_eal_alarm_set(10,
-				ixgbe_dev_setup_link_alarm_handler, dev);
+			if (rte_atomic32_test_and_set(&ad->link_thread_running)) {
+				if (rte_ctrl_thread_create(&ad->link_thread_tid,
+					"ixgbe-link-handler",
+					NULL,
+					ixgbe_dev_setup_link_thread_handler,
+					dev) < 0) {
+					PMD_DRV_LOG(ERR,
+						"Create link thread failed!");
+					rte_atomic32_clear(&ad->link_thread_running);
+				}
+			} else {
+				PMD_DRV_LOG(ERR,
+					"Other link thread is running now!");
+			}
 		}
 		return rte_eth_linkstatus_set(dev, &link);
 	}
@@ -4684,10 +4759,10 @@ static int
 ixgbe_flow_ctrl_set(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 {
 	struct ixgbe_hw *hw;
+	struct ixgbe_adapter *adapter = dev->data->dev_private;
 	int err;
 	uint32_t rx_buf_size;
 	uint32_t max_high_water;
-	uint32_t mflcn;
 	enum ixgbe_fc_mode rte_fcmode_2_ixgbe_fcmode[] = {
 		ixgbe_fc_none,
 		ixgbe_fc_rx_pause,
@@ -4720,31 +4795,14 @@ ixgbe_flow_ctrl_set(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 	hw->fc.low_water[0]   = fc_conf->low_water;
 	hw->fc.send_xon       = fc_conf->send_xon;
 	hw->fc.disable_fc_autoneg = !fc_conf->autoneg;
+	adapter->mac_ctrl_frame_fwd = fc_conf->mac_ctrl_frame_fwd;
 
-	err = ixgbe_fc_enable(hw);
-
-	/* Not negotiated is not an error case */
-	if ((err == IXGBE_SUCCESS) || (err == IXGBE_ERR_FC_NOT_NEGOTIATED)) {
-
-		/* check if we want to forward MAC frames - driver doesn't have native
-		 * capability to do that, so we'll write the registers ourselves */
-
-		mflcn = IXGBE_READ_REG(hw, IXGBE_MFLCN);
-
-		/* set or clear MFLCN.PMCF bit depending on configuration */
-		if (fc_conf->mac_ctrl_frame_fwd != 0)
-			mflcn |= IXGBE_MFLCN_PMCF;
-		else
-			mflcn &= ~IXGBE_MFLCN_PMCF;
-
-		IXGBE_WRITE_REG(hw, IXGBE_MFLCN, mflcn);
-		IXGBE_WRITE_FLUSH(hw);
-
-		return 0;
+	err = ixgbe_flow_ctrl_enable(dev, hw);
+	if (err < 0) {
+		PMD_INIT_LOG(ERR, "ixgbe_flow_ctrl_enable = 0x%x", err);
+		return -EIO;
 	}
-
-	PMD_INIT_LOG(ERR, "ixgbe_fc_enable = 0x%x", err);
-	return -EIO;
+	return err;
 }
 
 /**
@@ -5245,7 +5303,7 @@ ixgbevf_dev_start(struct rte_eth_dev *dev)
 	PMD_INIT_FUNC_TRACE();
 
 	/* Stop the link setup handler before resetting the HW. */
-	rte_eal_alarm_cancel(ixgbe_dev_setup_link_alarm_handler, dev);
+	ixgbe_dev_cancel_link_thread(dev);
 
 	err = hw->mac.ops.reset_hw(hw);
 	if (err) {
@@ -5343,7 +5401,7 @@ ixgbevf_dev_stop(struct rte_eth_dev *dev)
 
 	PMD_INIT_FUNC_TRACE();
 
-	rte_eal_alarm_cancel(ixgbe_dev_setup_link_alarm_handler, dev);
+	ixgbe_dev_cancel_link_thread(dev);
 
 	ixgbevf_intr_disable(dev);
 

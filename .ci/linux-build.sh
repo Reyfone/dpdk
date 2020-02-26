@@ -90,9 +90,7 @@ if [ "$ABI_CHECKS" = "1" ]; then
 fi
 
 if [ "$RUN_TESTS" = "1" ]; then
-    sudo meson test -C build --suite fast-tests -t 3
-fi
-
-if [ "$RUN_TESTS_NO_HUGE" = "1" ]; then
-    sudo meson test -C build --suite nohuge-tests -t 3
+    for testsuite in ${TEST_SUITES:-fast_tests}; do
+        sudo meson test -C build --suite $testsuite -t 3
+    done
 fi

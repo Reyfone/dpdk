@@ -257,7 +257,6 @@ nohuge_test_names = [
         'logs_autotest',
         'lpm_autotest',
         'lpm6_autotest',
-        'mbuf_autotest',
         'memcpy_autotest',
         'memory_autotest',
         'meter_autotest',

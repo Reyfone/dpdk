@@ -258,7 +258,6 @@ nohuge_test_names = [
         'lpm6_autotest',
         'memcpy_autotest',
         'meter_autotest',
-        'multiprocess_autotest',
         'per_lcore_autotest',
         'prefetch_autotest',
         'rcu_qsbr_autotest',

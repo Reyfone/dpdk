@@ -238,7 +238,6 @@ fast_test_names = [
 ]
 
 nohuge_test_names = [
-        'alarm_autotest',
         'byteorder_autotest',
         'cmdline_autotest',
         'common_autotest',

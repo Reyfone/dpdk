@@ -40,7 +40,7 @@ jobs:
   - env: DEF_LIB="static"
     arch: amd64
     compiler: gcc
-  - env: DEF_LIB="shared" RUN_TESTS=1 TEST_SUITES="fast-tests nohuge-tests"
+  - env: DEF_LIB="shared" RUN_TESTS=1 TEST_SUITES="nohuge-tests fast-tests"
     arch: amd64
     compiler: gcc
   - env: DEF_LIB="shared" BUILD_DOCS=1
@@ -63,7 +63,7 @@ jobs:
   - env: DEF_LIB="static"
     arch: amd64
     compiler: clang
-  - env: DEF_LIB="shared" RUN_TESTS=1 TEST_SUITES="fast-tests nohuge-tests"
+  - env: DEF_LIB="shared" RUN_TESTS=1 TEST_SUITES="nohuge-tests fast-tests"
     arch: amd64
     compiler: clang
   - env: DEF_LIB="shared" BUILD_DOCS=1

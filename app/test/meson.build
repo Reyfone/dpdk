@@ -270,7 +270,6 @@ nohuge_test_names = [
         'sched_autotest',
         'spinlock_autotest',
         'string_autotest',
-	'table_autotest',
         'tailq_autotest',
         'user_delay_us',
         'version_autotest',
@@ -493,7 +492,7 @@ foreach arg : nohuge_test_names
 		test(arg, dpdk_test,
 			  env : ['DPDK_TEST=' + arg],
 			  args : test_args +
-				 ['--no-huge'] + ['-m 1500'] +
+				 ['--no-huge'] + ['-m 1024'] +
 				 ['--file-prefix=@0@'.format(arg)],
 		timeout : timeout_seconds_fast,
 		is_parallel : false,

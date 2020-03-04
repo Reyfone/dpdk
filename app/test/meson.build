@@ -238,6 +238,7 @@ fast_test_names = [
 ]
 
 nohuge_test_names = [
+	'acl_autotest',
         'byteorder_autotest',
         'cmdline_autotest',
         'common_autotest',
@@ -252,6 +253,7 @@ nohuge_test_names = [
         'event_ring_autotest',
         'fib_autotest',
         'fib6_autotest',
+	'hash_autotest',
         'interrupt_autotest',
         'logs_autotest',
         'lpm_autotest',
@@ -271,6 +273,7 @@ nohuge_test_names = [
         'sched_autotest',
         'spinlock_autotest',
         'string_autotest',
+	'table_autotest',
         'tailq_autotest',
         'user_delay_us',
         'version_autotest',

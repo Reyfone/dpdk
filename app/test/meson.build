@@ -493,7 +493,7 @@ foreach arg : nohuge_test_names
 		test(arg, dpdk_test,
 			  env : ['DPDK_TEST=' + arg],
 			  args : test_args +
-				 ['--no-huge'] + ['-m 2048'] +
+				 ['--no-huge'] + ['-m 1500'] +
 				 ['--file-prefix=@0@'.format(arg)],
 		timeout : timeout_seconds_fast,
 		is_parallel : false,

@@ -397,15 +397,21 @@ dpdk_test = executable('dpdk-test',
 
 has_hugepage = true
 if host_machine.system() == 'linux'
+	message('This is a linux system')
 	check_hugepage = run_command('cat',
-				     '/proc/sys/vm/nr_hugepages'
-				    ).stdout().strip()
-	if check_hugepage == '0'
+				     '/proc/sys/vm/nr_hugepages')
+	message('nr_hugepages read value: @0@'.format(check_hugepage.stdout().strip()))
+	if check_hugepage.returncode() != 0
+		message('nr_hugepages read error: @0@'.format(check_hugepage.returncode()))
+		has_hugepage = false
+	elif check_hugepage.stdout().strip() == '0'
 		set_hugepage = run_command('echo', '1', '>',
 				     '/proc/sys/vm/nr_hugepages')
 		if set_hugepage.returncode() != 0
+			message('nr_hugepages write error: @0@'.format(set_hugepage.returncode()))
 			has_hugepage = false
 		else
+			message('restore nr_hugepages')
 			run_command('echo', '0', '>',
 				    '/proc/sys/vm/nr_hugepages')
 		endif

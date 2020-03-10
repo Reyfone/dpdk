@@ -411,6 +411,7 @@ if host_machine.system() == 'linux'
 		endif
 	endif
 endif
+message('hugepage availbility: @0@'.format(has_hugepage))
 
 # some perf tests (eg: memcpy perf autotest)take very long
 # to complete, so timeout to 10 minutes
@@ -430,19 +431,19 @@ foreach arg : fast_test_names
 		endforeach
 	endif
 	if host_machine.system() == 'linux'
-		if (not has_hugepage) and arg[1]
+		if has_hugepage
 			test(arg[0], dpdk_test,
 				  env : ['DPDK_TEST=' + arg[0]],
 				  args : test_args +
-					 ['--no-huge'] + ['-m 1024'] +
 					 ['--file-prefix=@0@'.format(arg[0])],
 			timeout : timeout_seconds_fast,
 			is_parallel : false,
 			suite : 'fast-tests')
-		elif has_hugepage
+		elif arg[1]
 			test(arg[0], dpdk_test,
 				  env : ['DPDK_TEST=' + arg[0]],
 				  args : test_args +
+					 ['--no-huge'] + ['-m 1024'] +
 					 ['--file-prefix=@0@'.format(arg[0])],
 			timeout : timeout_seconds_fast,
 			is_parallel : false,

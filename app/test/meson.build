@@ -213,7 +213,7 @@ fast_test_names = [
         ['stack_autotest', false],
         ['stack_lf_autotest', false],
         ['string_autotest', true],
-        ['table_autotest', false],
+        ['table_autotest', true],
         ['tailq_autotest', true],
         ['timer_autotest', false],
         ['user_delay_us', true],
@@ -399,7 +399,6 @@ has_hugepage = true
 if host_machine.system() == 'linux'
 	check_hugepage = run_command('cat',
 				     '/proc/sys/vm/nr_hugepages')
-	message('nr_hugepages read value: @0@'.format(check_hugepage.stdout().strip()))
 	if (check_hugepage.returncode() != 0 or
 	    check_hugepage.stdout().strip() == '0')
 		has_hugepage = false
@@ -437,7 +436,7 @@ foreach arg : fast_test_names
 			test(arg[0], dpdk_test,
 				  env : ['DPDK_TEST=' + arg[0]],
 				  args : test_args +
-					 ['--no-huge'] + ['-m 1024'] +
+					 ['--no-huge'] + ['-m 2048'] +
 					 ['--file-prefix=@0@'.format(arg[0])],
 			timeout : timeout_seconds_fast,
 			is_parallel : false,

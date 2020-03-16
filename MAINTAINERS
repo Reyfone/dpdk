@@ -51,7 +51,6 @@ T: git://dpdk.org/next/dpdk-next-net-mlx
 
 Next-virtio Tree
 M: Maxime Coquelin <maxime.coquelin@redhat.com>
-M: Tiwei Bie <tiwei.bie@intel.com>
 T: git://dpdk.org/next/dpdk-next-virtio
 
 Next-crypto Tree
@@ -103,6 +102,7 @@ F: devtools/git-log-fixes.sh
 F: devtools/load-devel-config
 F: devtools/test-build.sh
 F: devtools/test-meson-builds.sh
+F: devtools/words-case.txt
 F: license/
 F: .editorconfig
 
@@ -770,15 +770,15 @@ F: doc/guides/nics/netvsc.rst
 F: doc/guides/nics/features/netvsc.ini
 
 Netcope szedata2
-M: Jan Remes <remes@netcope.com>
-M: Rastislav Cernay <cernay@netcope.com>
+M: Martin Zizka <zizka@netcope.com>
+M: Jakub Neruda <neruda@netcope.com>
 F: drivers/net/szedata2/
 F: doc/guides/nics/szedata2.rst
 F: doc/guides/nics/features/szedata2.ini
 
 Netcope nfb
-M: Rastislav Cernay <cernay@netcope.com>
-M: Jan Remes <remes@netcope.com>
+M: Martin Zizka <zizka@netcope.com>
+M: Jakub Neruda <neruda@netcope.com>
 F: drivers/net/nfb/
 F: doc/guides/nics/nfb.rst
 F: doc/guides/nics/features/nfb.ini
@@ -855,8 +855,8 @@ F: doc/guides/nics/features/vmxnet3.ini
 
 Vhost-user
 M: Maxime Coquelin <maxime.coquelin@redhat.com>
-M: Tiwei Bie <tiwei.bie@intel.com>
 M: Zhihong Wang <zhihong.wang@intel.com>
+M: Xiaolong Ye <xiaolong.ye@intel.com>
 T: git://dpdk.org/next/dpdk-next-virtio
 F: lib/librte_vhost/
 F: doc/guides/prog_guide/vhost_lib.rst
@@ -870,8 +870,8 @@ F: doc/guides/sample_app_ug/vdpa.rst
 
 Vhost PMD
 M: Maxime Coquelin <maxime.coquelin@redhat.com>
-M: Tiwei Bie <tiwei.bie@intel.com>
 M: Zhihong Wang <zhihong.wang@intel.com>
+M: Xiaolong Ye <xiaolong.ye@intel.com>
 T: git://dpdk.org/next/dpdk-next-virtio
 F: drivers/net/vhost/
 F: doc/guides/nics/vhost.rst
@@ -879,8 +879,8 @@ F: doc/guides/nics/features/vhost.ini
 
 Virtio PMD
 M: Maxime Coquelin <maxime.coquelin@redhat.com>
-M: Tiwei Bie <tiwei.bie@intel.com>
 M: Zhihong Wang <zhihong.wang@intel.com>
+M: Xiaolong Ye <xiaolong.ye@intel.com>
 T: git://dpdk.org/next/dpdk-next-virtio
 F: drivers/net/virtio/
 F: doc/guides/nics/virtio.rst

@@ -56,6 +56,85 @@ New Features
      Also, make sure to start the actual text at the margin.
      =========================================================
 
+* **Added new API for rte_ring.**
+
+  * New synchronization modes for rte_ring.
+
+  Introduced new optional MT synchronization modes for rte_ring:
+  Relaxed Tail Sync (RTS) mode and Head/Tail Sync (HTS) mode.
+  With these mode selected, rte_ring shows significant improvements for
+  average enqueue/dequeue times on overcommitted systems.
+
+  * Added peek style API for rte_ring.
+
+  For rings with producer/consumer in RTE_RING_SYNC_ST, RTE_RING_SYNC_MT_HTS
+  mode, provide an ability to split enqueue/dequeue operation into two phases
+  (enqueue/dequeue start; enqueue/dequeue finish). That allows user to inspect
+  objects in the ring without removing them from it (aka MT safe peek).
+
+* **Updated Mellanox mlx5 driver.**
+
+  Updated Mellanox mlx5 driver with new features and improvements, including:
+
+  * Added support for matching on IPv4 Time To Live and IPv6 Hop Limit.
+
+* **Updated the AESNI MB crypto PMD.**
+
+  * Added support for intel-ipsec-mb version 0.54.
+  * Updated the AESNI MB PMD with AES-256 DOCSIS algorithm.
+  * Added support for synchronous Crypto burst API.
+
+* **Updated the AESNI GCM crypto PMD.**
+
+  * Added support for intel-ipsec-mb version 0.54.
+
+* **Added handling of mixed crypto algorithms in QAT PMD for GEN2.**
+
+  Enabled handling of mixed algorithms in encrypted digest hash-cipher
+  (generation) and cipher-hash (verification) requests in QAT PMD
+  when running on GEN2 QAT hardware with particular firmware versions
+  (GEN3 support was added in DPDK 20.02).
+
+* **Added plain SHA-1,224,256,384,512 support to QAT PMD.**
+
+  Added support for plain SHA-1, SHA-224, SHA-256, SHA-384 and SHA-512 hashes
+  to QAT PMD.
+
+* **Added QAT intermediate buffer too small handling in QAT compression PMD.**
+
+  Added a special way of buffer handling when internal QAT intermediate buffer
+  is too small for Huffman dynamic compression operation. Instead of falling
+  back to fixed compression, the operation is now split into multiple smaller
+  dynamic compression requests (possible to execute on QAT) and their results
+  are then combined and copied into the output buffer. This is not possible if
+  any checksum calculation was requested - in such case the code falls back to
+  fixed compression as before.
+
+* **Updated the turbo_sw bbdev PMD.**
+
+  Supported large size code blocks which does not fit in one mbuf segment.
+
+* **Added Intel FPGA_5GNR_FEC bbdev PMD.**
+
+  Added a new ``fpga_5gnr_fec`` bbdev driver for the Intel\ |reg| FPGA PAC
+  (Programmable  Acceleration Card) N3000.  See the
+  :doc:`../bbdevs/fpga_5gnr_fec` BBDEV guide for more details on this new driver.
+
+* **Updated ipsec-secgw sample application with following features.**
+
+  * Updated ipsec-secgw application to add event based packet processing.
+    The worker thread(s) would receive events and submit them back to the
+    event device after the processing. This way, multicore scaling and HW
+    assisted scheduling is achieved by making use of the event device
+    capabilities. The event mode currently supports only inline IPsec
+    protocol offload.
+
+  * Updated ipsec-secgw application to support key sizes for AES-192-CBC,
+    AES-192-GCM, AES-256-GCM algorithms.
+
+  * Added IPsec inbound load-distribution support for ipsec-secgw application
+    using NIC load distribution feature(Flow Director).
+
 
 Removed Items
 -------------

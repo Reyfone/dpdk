@@ -67,7 +67,7 @@ struct flow_key {
 	uint16_t port_src;
 	uint16_t port_dst;
 	uint8_t proto;
-} __attribute__((packed));
+} __rte_packed;
 
 int hash_logtype_test;
 
@@ -75,9 +75,9 @@ int hash_logtype_test;
  * Hash function that always returns the same value, to easily test what
  * happens when a bucket is full.
  */
-static uint32_t pseudo_hash(__attribute__((unused)) const void *keys,
-			    __attribute__((unused)) uint32_t key_len,
-			    __attribute__((unused)) uint32_t init_val)
+static uint32_t pseudo_hash(__rte_unused const void *keys,
+			    __rte_unused uint32_t key_len,
+			    __rte_unused uint32_t init_val)
 {
 	return 3;
 }
@@ -1136,8 +1136,11 @@ fbk_hash_unit_test(void)
 	handle = rte_fbk_hash_create(&invalid_params_7);
 	RETURN_IF_ERROR_FBK(handle != NULL, "fbk hash creation should have failed");
 
-	handle = rte_fbk_hash_create(&invalid_params_8);
-	RETURN_IF_ERROR_FBK(handle != NULL, "fbk hash creation should have failed");
+	if (rte_eal_has_hugepages()) {
+		handle = rte_fbk_hash_create(&invalid_params_8);
+		RETURN_IF_ERROR_FBK(handle != NULL,
+					"fbk hash creation should have failed");
+	}
 
 	handle = rte_fbk_hash_create(&invalid_params_same_name_1);
 	RETURN_IF_ERROR_FBK(handle == NULL, "fbk hash creation should have succeeded");

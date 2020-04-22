@@ -77,7 +77,12 @@ SRCS-y += test_external_mem.c
 SRCS-y += test_rand_perf.c
 
 SRCS-y += test_ring.c
+SRCS-y += test_ring_mpmc_stress.c
+SRCS-y += test_ring_hts_stress.c
 SRCS-y += test_ring_perf.c
+SRCS-y += test_ring_peek_stress.c
+SRCS-y += test_ring_rts_stress.c
+SRCS-y += test_ring_stress.c
 SRCS-y += test_pmd_perf.c
 
 ifeq ($(CONFIG_RTE_LIBRTE_TABLE),y)
@@ -231,13 +236,13 @@ SRCS-$(CONFIG_RTE_LIBRTE_BPF) += test_bpf.c
 
 SRCS-$(CONFIG_RTE_LIBRTE_RCU) += test_rcu_qsbr.c test_rcu_qsbr_perf.c
 
+SRCS-$(CONFIG_RTE_LIBRTE_SECURITY) += test_security.c
+
 SRCS-$(CONFIG_RTE_LIBRTE_IPSEC) += test_ipsec.c
 SRCS-$(CONFIG_RTE_LIBRTE_IPSEC) += test_ipsec_sad.c
 ifeq ($(CONFIG_RTE_LIBRTE_IPSEC),y)
 LDLIBS += -lrte_ipsec
 endif
-
-CFLAGS += -DALLOW_EXPERIMENTAL_API
 
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)

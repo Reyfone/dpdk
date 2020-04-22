@@ -36,7 +36,7 @@ if is_windows
 	libraries = ['kvargs','eal'] # only supported libraries for windows
 endif
 
-default_cflags = machine_args
+default_cflags = machine_args + ['-DALLOW_EXPERIMENTAL_API']
 if cc.has_argument('-Wno-format-truncation')
 	default_cflags += '-Wno-format-truncation'
 endif
@@ -47,7 +47,6 @@ foreach l:libraries
 	build = true
 	reason = '<unknown reason>' # set if build == false to explain why
 	name = l
-	allow_experimental_apis = false
 	use_function_versioning = false
 	sources = []
 	headers = []
@@ -98,9 +97,6 @@ foreach l:libraries
 			static_dep = shared_dep
 		else
 
-			if allow_experimental_apis
-				cflags += '-DALLOW_EXPERIMENTAL_API'
-			endif
 			if use_function_versioning
 				cflags += '-DRTE_USE_FUNCTION_VERSIONING'
 			endif
@@ -148,12 +144,16 @@ foreach l:libraries
 				command: [map_to_def_cmd, '@INPUT@', '@OUTPUT@'],
 				input: version_map,
 				output: 'rte_@0@_exports.def'.format(name))
-			lk_deps = [version_map, def_file]
-			if is_windows
+
+			if is_ms_linker
 				lk_args = ['-Wl,/def:' + def_file.full_path(),
 					'-Wl,/implib:lib\\' + implib]
 			else
 				lk_args = ['-Wl,--version-script=' + version_map]
+			endif
+
+			lk_deps = [version_map, def_file]
+			if not is_windows
 				# on unix systems check the output of the
 				# experimental syms script, using it as a
 				# dependency of the .so build

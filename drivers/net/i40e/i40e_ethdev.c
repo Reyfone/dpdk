@@ -4489,7 +4489,7 @@ out:
  * @alignment: what to align the allocation to
  **/
 enum i40e_status_code
-i40e_allocate_dma_mem_d(__attribute__((unused)) struct i40e_hw *hw,
+i40e_allocate_dma_mem_d(__rte_unused struct i40e_hw *hw,
 			struct i40e_dma_mem *mem,
 			u64 size,
 			u32 alignment)
@@ -4523,7 +4523,7 @@ i40e_allocate_dma_mem_d(__attribute__((unused)) struct i40e_hw *hw,
  * @mem:  ptr to mem struct to free
  **/
 enum i40e_status_code
-i40e_free_dma_mem_d(__attribute__((unused)) struct i40e_hw *hw,
+i40e_free_dma_mem_d(__rte_unused struct i40e_hw *hw,
 		    struct i40e_dma_mem *mem)
 {
 	if (!mem)
@@ -4547,7 +4547,7 @@ i40e_free_dma_mem_d(__attribute__((unused)) struct i40e_hw *hw,
  * @size: size of memory requested
  **/
 enum i40e_status_code
-i40e_allocate_virt_mem_d(__attribute__((unused)) struct i40e_hw *hw,
+i40e_allocate_virt_mem_d(__rte_unused struct i40e_hw *hw,
 			 struct i40e_virt_mem *mem,
 			 u32 size)
 {
@@ -4569,7 +4569,7 @@ i40e_allocate_virt_mem_d(__attribute__((unused)) struct i40e_hw *hw,
  * @mem:  pointer to mem struct to free
  **/
 enum i40e_status_code
-i40e_free_virt_mem_d(__attribute__((unused)) struct i40e_hw *hw,
+i40e_free_virt_mem_d(__rte_unused struct i40e_hw *hw,
 		     struct i40e_virt_mem *mem)
 {
 	if (!mem)
@@ -4600,7 +4600,7 @@ i40e_release_spinlock_d(struct i40e_spinlock *sp)
 }
 
 void
-i40e_destroy_spinlock_d(__attribute__((unused)) struct i40e_spinlock *sp)
+i40e_destroy_spinlock_d(__rte_unused struct i40e_spinlock *sp)
 {
 	return;
 }
@@ -10504,6 +10504,7 @@ i40e_get_swr_pm_cfg(struct i40e_hw *hw, uint32_t *value)
 		{ I40E_GL_SWR_PM_EF_DEVICE(I40E_DEV_ID_KX_C) },
 		{ I40E_GL_SWR_PM_EF_DEVICE(I40E_DEV_ID_10G_BASE_T) },
 		{ I40E_GL_SWR_PM_EF_DEVICE(I40E_DEV_ID_10G_BASE_T4) },
+		{ I40E_GL_SWR_PM_EF_DEVICE(I40E_DEV_ID_SFP_X722) },
 
 		{ I40E_GL_SWR_PM_SF_DEVICE(I40E_DEV_ID_KX_B) },
 		{ I40E_GL_SWR_PM_SF_DEVICE(I40E_DEV_ID_QSFP_A) },
@@ -11669,11 +11670,15 @@ i40e_dcb_init_configure(struct rte_eth_dev *dev, bool sw_dcb)
 	 * LLDP MIB change event.
 	 */
 	if (sw_dcb == TRUE) {
-		if (i40e_need_stop_lldp(dev)) {
-			ret = i40e_aq_stop_lldp(hw, TRUE, TRUE, NULL);
-			if (ret != I40E_SUCCESS)
-				PMD_INIT_LOG(DEBUG, "Failed to stop lldp");
-		}
+		/* Stopping lldp is necessary for DPDK, but it will cause
+		 * DCB init failed. For i40e_init_dcb(), the prerequisite
+		 * for successful initialization of DCB is that LLDP is
+		 * enabled. So it is needed to start lldp before DCB init
+		 * and stop it after initialization.
+		 */
+		ret = i40e_aq_start_lldp(hw, true, NULL);
+		if (ret != I40E_SUCCESS)
+			PMD_INIT_LOG(DEBUG, "Failed to start lldp");
 
 		ret = i40e_init_dcb(hw, true);
 		/* If lldp agent is stopped, the return value from
@@ -11717,6 +11722,12 @@ i40e_dcb_init_configure(struct rte_eth_dev *dev, bool sw_dcb)
 				"DCB initialization in FW fails, err = %d, aq_err = %d.",
 				ret, hw->aq.asq_last_status);
 			return -ENOTSUP;
+		}
+
+		if (i40e_need_stop_lldp(dev)) {
+			ret = i40e_aq_stop_lldp(hw, true, true, NULL);
+			if (ret != I40E_SUCCESS)
+				PMD_INIT_LOG(DEBUG, "Failed to stop lldp");
 		}
 	} else {
 		ret = i40e_aq_start_lldp(hw, true, NULL);

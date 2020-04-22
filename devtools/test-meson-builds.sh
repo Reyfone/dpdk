@@ -74,7 +74,12 @@ config () # <dir> <builddir> <meson options>
 		return
 	fi
 	options=
-	options="$options --werror -Dexamples=all"
+	options="$options --werror"
+	if echo $* | grep -qw -- '--default-library=shared' ; then
+		options="$options -Dexamples=all"
+	else
+		options="$options -Dexamples=l3fwd" # save disk space
+	fi
 	options="$options --buildtype=debugoptimized"
 	for option in $DPDK_MESON_OPTIONS ; do
 		options="$options -D$option"
@@ -104,8 +109,13 @@ compile () # <builddir>
 install_target () # <builddir> <installdir>
 {
 	rm -rf $2
-	echo "DESTDIR=$2 $ninja_cmd -C $1 install"
-	DESTDIR=$2 $ninja_cmd -C $1 install
+	if [ -n "$TEST_MESON_BUILD_VERY_VERBOSE$TEST_MESON_BUILD_VERBOSE" ]; then
+		echo "DESTDIR=$2 $ninja_cmd -C $1 install"
+		DESTDIR=$2 $ninja_cmd -C $1 install
+	else
+		echo "DESTDIR=$2 $ninja_cmd -C $1 install >/dev/null"
+		DESTDIR=$2 $ninja_cmd -C $1 install >/dev/null
+	fi
 }
 
 build () # <directory> <target compiler> <meson options>

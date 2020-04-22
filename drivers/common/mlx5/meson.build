@@ -49,7 +49,6 @@ if static_ibverbs
 	ext_deps += declare_dependency(link_args:ibv_ldflags.split())
 endif
 
-allow_experimental_apis = true
 deps += ['hash', 'pci', 'net', 'eal', 'kvargs']
 sources = files(
 	'mlx5_devx_cmds.c',
@@ -203,7 +202,7 @@ if dlopen_ibverbs
 	dlopen_install_dir = [ eal_pmd_path + '-glue' ]
 	dlopen_includes = [global_inc]
 	dlopen_includes += include_directories(
-		'../../../lib/librte_eal/common/include/generic',
+		'../../../lib/librte_eal/include/generic',
 	)
 	shared_lib = shared_library(
 		dlopen_lib_name,

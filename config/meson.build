@@ -14,6 +14,10 @@ foreach env:supported_exec_envs
 	set_variable('is_' + env, exec_env == env)
 endforeach
 
+# MS linker requires special treatment.
+# TODO: use cc.get_linker_id() with Meson >= 0.54
+is_ms_linker = is_windows and (cc.get_id() == 'clang')
+
 # set the major version, which might be used by drivers and libraries
 # depending on the configuration options
 pver = meson.project_version().split('.')
@@ -108,11 +112,15 @@ dpdk_conf.set('RTE_TOOLCHAIN_' + toolchain.to_upper(), 1)
 
 dpdk_conf.set('RTE_ARCH_64', cc.sizeof('void *') == 8)
 
-add_project_link_arguments('-Wl,--no-as-needed', language: 'c')
+if not is_windows
+	add_project_link_arguments('-Wl,--no-as-needed', language: 'c')
+endif
 
-# use pthreads
-add_project_link_arguments('-pthread', language: 'c')
-dpdk_extra_ldflags += '-pthread'
+# use pthreads if available for the platform
+if not is_ms_linker
+	add_project_link_arguments('-pthread', language: 'c')
+	dpdk_extra_ldflags += '-pthread'
+endif
 
 # on some OS, maths functions are in a separate library
 if cc.find_library('m', required : false).found()
@@ -163,6 +171,13 @@ endif
 if pcap_dep.found() and cc.has_header('pcap.h', dependencies: pcap_dep)
 	dpdk_conf.set('RTE_PORT_PCAP', 1)
 	dpdk_extra_ldflags += '-lpcap'
+endif
+
+# for clang 32-bit compiles we need libatomic for 64-bit atomic ops
+if cc.get_id() == 'clang' and dpdk_conf.get('RTE_ARCH_64') == false
+	atomic_dep = cc.find_library('atomic', required: true)
+	add_project_link_arguments('-latomic', language: 'c')
+	dpdk_extra_ldflags += '-latomic'
 endif
 
 # add -include rte_config to cflags
@@ -226,7 +241,7 @@ if host_machine.cpu_family().startswith('x86')
 elif host_machine.cpu_family().startswith('arm') or host_machine.cpu_family().startswith('aarch')
 	arch_subdir = 'arm'
 elif host_machine.cpu_family().startswith('ppc')
-	arch_subdir = 'ppc_64'
+	arch_subdir = 'ppc'
 endif
 subdir(arch_subdir)
 dpdk_conf.set('RTE_COMPILE_TIME_CPUFLAGS', ','.join(compile_time_cpuflags))
@@ -245,6 +260,16 @@ add_project_arguments('-D_GNU_SOURCE', language: 'c')
 # specify -D__BSD_VISIBLE for FreeBSD
 if is_freebsd
 	add_project_arguments('-D__BSD_VISIBLE', language: 'c')
+endif
+
+if is_windows
+	# Minimum supported API is Windows 7.
+	add_project_arguments('-D_WIN32_WINNT=0x0601', language: 'c')
+
+	# Use MinGW-w64 stdio, because DPDK assumes ANSI-compliant formatting.
+	if cc.get_id() == 'gcc'
+		add_project_arguments('-D__USE_MINGW_ANSI_STDIO', language: 'c')
+	endif
 endif
 
 if get_option('b_lto')

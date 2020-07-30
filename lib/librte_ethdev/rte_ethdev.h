@@ -158,6 +158,7 @@ extern "C" {
 #include <rte_config.h>
 #include <rte_ether.h>
 
+#include "rte_ethdev_trace_fp.h"
 #include "rte_dev_info.h"
 
 extern int rte_eth_dev_logtype;
@@ -283,6 +284,7 @@ struct rte_eth_stats {
 #define ETH_LINK_SPEED_50G      (1 << 12)  /**<  50 Gbps */
 #define ETH_LINK_SPEED_56G      (1 << 13)  /**<  56 Gbps */
 #define ETH_LINK_SPEED_100G     (1 << 14)  /**< 100 Gbps */
+#define ETH_LINK_SPEED_200G     (1 << 15)  /**< 200 Gbps */
 
 /**
  * Ethernet numeric link speeds in Mbps
@@ -300,6 +302,7 @@ struct rte_eth_stats {
 #define ETH_SPEED_NUM_50G      50000 /**<  50 Gbps */
 #define ETH_SPEED_NUM_56G      56000 /**<  56 Gbps */
 #define ETH_SPEED_NUM_100G    100000 /**< 100 Gbps */
+#define ETH_SPEED_NUM_200G    200000 /**< 200 Gbps */
 
 /**
  * A structure used to retrieve link-level information of an Ethernet port.
@@ -511,6 +514,14 @@ struct rte_eth_rss_conf {
 #define ETH_RSS_GENEVE             (1ULL << 20)
 #define ETH_RSS_NVGRE              (1ULL << 21)
 #define ETH_RSS_GTPU               (1ULL << 23)
+#define ETH_RSS_ETH                (1ULL << 24)
+#define ETH_RSS_S_VLAN             (1ULL << 25)
+#define ETH_RSS_C_VLAN             (1ULL << 26)
+#define ETH_RSS_ESP                (1ULL << 27)
+#define ETH_RSS_AH                 (1ULL << 28)
+#define ETH_RSS_L2TPV3             (1ULL << 29)
+#define ETH_RSS_PFCP               (1ULL << 30)
+#define ETH_RSS_PPPOE		   (1ULL << 31)
 
 /*
  * We use the following macros to combine with above ETH_RSS_* for
@@ -525,6 +536,21 @@ struct rte_eth_rss_conf {
 #define ETH_RSS_L3_DST_ONLY        (1ULL << 62)
 #define ETH_RSS_L4_SRC_ONLY        (1ULL << 61)
 #define ETH_RSS_L4_DST_ONLY        (1ULL << 60)
+#define ETH_RSS_L2_SRC_ONLY        (1ULL << 59)
+#define ETH_RSS_L2_DST_ONLY        (1ULL << 58)
+
+/*
+ * Only select IPV6 address prefix as RSS input set according to
+ * https://tools.ietf.org/html/rfc6052
+ * Must be combined with ETH_RSS_IPV6, ETH_RSS_NONFRAG_IPV6_UDP,
+ * ETH_RSS_NONFRAG_IPV6_TCP, ETH_RSS_NONFRAG_IPV6_SCTP.
+ */
+#define RTE_ETH_RSS_L3_PRE32	   (1ULL << 57)
+#define RTE_ETH_RSS_L3_PRE40	   (1ULL << 56)
+#define RTE_ETH_RSS_L3_PRE48	   (1ULL << 55)
+#define RTE_ETH_RSS_L3_PRE56	   (1ULL << 54)
+#define RTE_ETH_RSS_L3_PRE64	   (1ULL << 53)
+#define RTE_ETH_RSS_L3_PRE96	   (1ULL << 52)
 
 /**
  * For input set change of hash filter, if SRC_ONLY and DST_ONLY of
@@ -547,6 +573,102 @@ rte_eth_rss_hf_refine(uint64_t rss_hf)
 
 	return rss_hf;
 }
+
+#define ETH_RSS_IPV6_PRE32 ( \
+		ETH_RSS_IPV6 | \
+		RTE_ETH_RSS_L3_PRE32)
+
+#define ETH_RSS_IPV6_PRE40 ( \
+		ETH_RSS_IPV6 | \
+		RTE_ETH_RSS_L3_PRE40)
+
+#define ETH_RSS_IPV6_PRE48 ( \
+		ETH_RSS_IPV6 | \
+		RTE_ETH_RSS_L3_PRE48)
+
+#define ETH_RSS_IPV6_PRE56 ( \
+		ETH_RSS_IPV6 | \
+		RTE_ETH_RSS_L3_PRE56)
+
+#define ETH_RSS_IPV6_PRE64 ( \
+		ETH_RSS_IPV6 | \
+		RTE_ETH_RSS_L3_PRE64)
+
+#define ETH_RSS_IPV6_PRE96 ( \
+		ETH_RSS_IPV6 | \
+		RTE_ETH_RSS_L3_PRE96)
+
+#define ETH_RSS_IPV6_PRE32_UDP ( \
+		ETH_RSS_NONFRAG_IPV6_UDP | \
+		RTE_ETH_RSS_L3_PRE32)
+
+#define ETH_RSS_IPV6_PRE40_UDP ( \
+		ETH_RSS_NONFRAG_IPV6_UDP | \
+		RTE_ETH_RSS_L3_PRE40)
+
+#define ETH_RSS_IPV6_PRE48_UDP ( \
+		ETH_RSS_NONFRAG_IPV6_UDP | \
+		RTE_ETH_RSS_L3_PRE48)
+
+#define ETH_RSS_IPV6_PRE56_UDP ( \
+		ETH_RSS_NONFRAG_IPV6_UDP | \
+		RTE_ETH_RSS_L3_PRE56)
+
+#define ETH_RSS_IPV6_PRE64_UDP ( \
+		ETH_RSS_NONFRAG_IPV6_UDP | \
+		RTE_ETH_RSS_L3_PRE64)
+
+#define ETH_RSS_IPV6_PRE96_UDP ( \
+		ETH_RSS_NONFRAG_IPV6_UDP | \
+		RTE_ETH_RSS_L3_PRE96)
+
+#define ETH_RSS_IPV6_PRE32_TCP ( \
+		ETH_RSS_NONFRAG_IPV6_TCP | \
+		RTE_ETH_RSS_L3_PRE32)
+
+#define ETH_RSS_IPV6_PRE40_TCP ( \
+		ETH_RSS_NONFRAG_IPV6_TCP | \
+		RTE_ETH_RSS_L3_PRE40)
+
+#define ETH_RSS_IPV6_PRE48_TCP ( \
+		ETH_RSS_NONFRAG_IPV6_TCP | \
+		RTE_ETH_RSS_L3_PRE48)
+
+#define ETH_RSS_IPV6_PRE56_TCP ( \
+		ETH_RSS_NONFRAG_IPV6_TCP | \
+		RTE_ETH_RSS_L3_PRE56)
+
+#define ETH_RSS_IPV6_PRE64_TCP ( \
+		ETH_RSS_NONFRAG_IPV6_TCP | \
+		RTE_ETH_RSS_L3_PRE64)
+
+#define ETH_RSS_IPV6_PRE96_TCP ( \
+		ETH_RSS_NONFRAG_IPV6_TCP | \
+		RTE_ETH_RSS_L3_PRE96)
+
+#define ETH_RSS_IPV6_PRE32_SCTP ( \
+		ETH_RSS_NONFRAG_IPV6_SCTP | \
+		RTE_ETH_RSS_L3_PRE32)
+
+#define ETH_RSS_IPV6_PRE40_SCTP ( \
+		ETH_RSS_NONFRAG_IPV6_SCTP | \
+		RTE_ETH_RSS_L3_PRE40)
+
+#define ETH_RSS_IPV6_PRE48_SCTP ( \
+		ETH_RSS_NONFRAG_IPV6_SCTP | \
+		RTE_ETH_RSS_L3_PRE48)
+
+#define ETH_RSS_IPV6_PRE56_SCTP ( \
+		ETH_RSS_NONFRAG_IPV6_SCTP | \
+		RTE_ETH_RSS_L3_PRE56)
+
+#define ETH_RSS_IPV6_PRE64_SCTP ( \
+		ETH_RSS_NONFRAG_IPV6_SCTP | \
+		RTE_ETH_RSS_L3_PRE64)
+
+#define ETH_RSS_IPV6_PRE96_SCTP ( \
+		ETH_RSS_NONFRAG_IPV6_SCTP | \
+		RTE_ETH_RSS_L3_PRE96)
 
 #define ETH_RSS_IP ( \
 	ETH_RSS_IPV4 | \
@@ -575,6 +697,10 @@ rte_eth_rss_hf_refine(uint64_t rss_hf)
 	ETH_RSS_VXLAN  | \
 	ETH_RSS_GENEVE | \
 	ETH_RSS_NVGRE)
+
+#define ETH_RSS_VLAN ( \
+	ETH_RSS_S_VLAN  | \
+	ETH_RSS_C_VLAN)
 
 /**< Mask of valid RSS hash protocols */
 #define ETH_RSS_PROTO_MASK ( \
@@ -1160,6 +1286,10 @@ struct rte_eth_conf {
 #define DEV_TX_OFFLOAD_IP_TNL_TSO       0x00080000
 /** Device supports outer UDP checksum */
 #define DEV_TX_OFFLOAD_OUTER_UDP_CKSUM  0x00100000
+
+/** Device supports send on timestamp */
+#define DEV_TX_OFFLOAD_SEND_ON_TIMESTAMP 0x00200000
+
 
 #define RTE_ETH_DEV_CAPA_RUNTIME_RX_QUEUE_SETUP 0x00000001
 /**< Device supports Rx queue setup after device started*/
@@ -3015,6 +3145,7 @@ enum rte_eth_event_type {
 	RTE_ETH_EVENT_NEW,      /**< port is probed */
 	RTE_ETH_EVENT_DESTROY,  /**< port is released */
 	RTE_ETH_EVENT_IPSEC,    /**< IPsec offload related event */
+	RTE_ETH_EVENT_FLOW_AGED,/**< New aged-out flows is detected */
 	RTE_ETH_EVENT_MAX       /**< max value of this enum */
 };
 
@@ -4400,6 +4531,7 @@ rte_eth_rx_burst(uint16_t port_id, uint16_t queue_id,
 	}
 #endif
 
+	rte_ethdev_trace_rx_burst(port_id, queue_id, (void **)rx_pkts, nb_rx);
 	return nb_rx;
 }
 
@@ -4663,6 +4795,8 @@ rte_eth_tx_burst(uint16_t port_id, uint16_t queue_id,
 	}
 #endif
 
+	rte_ethdev_trace_tx_burst(port_id, queue_id, (void **)tx_pkts,
+		nb_pkts);
 	return (*dev->tx_pkt_burst)(dev->data->tx_queues[queue_id], tx_pkts, nb_pkts);
 }
 

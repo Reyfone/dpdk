@@ -23,27 +23,35 @@ Deprecation Notices
 * eal: The function ``rte_eal_remote_launch`` will return new error codes
   after read or write error on the pipe, instead of calling ``rte_panic``.
 
-* eal: both declaring and identifying devices will be streamlined in v18.11.
-  New functions will appear to query a specific port from buses, classes of
-  device and device drivers. Device declaration will be made coherent with the
-  new scheme of device identification.
-  As such, ``rte_devargs`` device representation will change.
-
-  - The enum ``rte_devtype`` was used to identify a bus and will disappear.
-  - Functions previously deprecated will change or disappear:
-
-    + ``rte_eal_devargs_type_count``
-
 * eal: The ``rte_logs`` struct and global symbol will be made private to
   remove it from the externally visible ABI and allow it to be updated in the
   future.
+
+* rte_atomicNN_xxx: These APIs do not take memory order parameter. This does
+  not allow for writing optimized code for all the CPU architectures supported
+  in DPDK. DPDK will adopt C11 atomic operations semantics and provide wrappers
+  using C11 atomic built-ins. These wrappers must be used for patches that
+  need to be merged in 20.08 onwards. This change will not introduce any
+  performance degradation.
+
+* rte_smp_*mb: These APIs provide full barrier functionality. However, many
+  use cases do not require full barriers. To support such use cases, DPDK will
+  adopt C11 barrier semantics and provide wrappers using C11 atomic built-ins.
+  These wrappers must be used for patches that need to be merged in 20.08
+  onwards. This change will not introduce any performance degradation.
+
+* rte_cio_*mb: Since the IO barriers for ARMv8 platforms are relaxed from DSB
+  to DMB, rte_cio_*mb APIs provide the same functionality as rte_io_*mb
+  APIs (taking all platforms into consideration). rte_io_*mb APIs should be
+  used in the place of rte_cio_*mb APIs. The rte_cio_*mb APIs will be
+  deprecated in 20.11 release.
 
 * igb_uio: In the view of reducing the kernel dependency from the main tree,
   as a first step, the Technical Board decided to move ``igb_uio``
   kernel module to the dpdk-kmods repository in the /linux/igb_uio/ directory
   in 20.11.
   Minutes of Technical Board Meeting of `2019-11-06
-  <http://mails.dpdk.org/archives/dev/2019-November/151763.html>`_.
+  <https://mails.dpdk.org/archives/dev/2019-November/151763.html>`_.
 
 * lib: will fix extending some enum/define breaking the ABI. There are multiple
   samples in DPDK that enum/define terminated with a ``.*MAX.*`` value which is
@@ -59,16 +67,14 @@ Deprecation Notices
   us extending existing enum/define.
   One solution can be using a fixed size array instead of ``.*MAX.*`` value.
 
-* dpaa2: removal of ``rte_dpaa2_memsegs`` structure which has been replaced
-  by a pa-va search library. This structure was earlier being used for holding
-  memory segments used by dpaa2 driver for faster pa->va translation. This
-  structure would be made internal (or removed if all dependencies are cleared)
-  in future releases.
-
-* mempool: starting from v20.05, the API of rte_mempool_populate_iova()
-  and rte_mempool_populate_virt() will change to return 0 instead
-  of -EINVAL when there is not enough room to store one object. The ABI
-  will be preserved until 20.11.
+* ethdev: Split the ``struct eth_dev_ops`` struct to hide it as much as possible
+  will be done in 20.11.
+  Currently the ``struct eth_dev_ops`` struct is accessible by the application
+  because some inline functions, like ``rte_eth_tx_descriptor_status()``,
+  access the struct directly.
+  The struct will be separate in two, the ops used by inline functions will be
+  moved next to Rx/Tx burst functions, rest of the ``struct eth_dev_ops`` struct
+  will be moved to header file for drivers to hide it from applications.
 
 * ethdev: the legacy filter API, including
   ``rte_eth_dev_filter_supported()``, ``rte_eth_dev_filter_ctrl()`` as well
@@ -93,6 +99,24 @@ Deprecation Notices
   In 19.11 PMDs will still update the field even when the offload is not
   enabled.
 
+* ethdev: ``rx_descriptor_done`` dev_ops and ``rte_eth_rx_descriptor_done``
+  will be deprecated in 20.11 and will be removed in 21.11.
+  Existing ``rte_eth_rx_descriptor_status`` and ``rte_eth_tx_descriptor_status``
+  APIs can be used as replacement.
+
+* ethdev: Some internal APIs for driver usage are exported in the .map file.
+  Now DPDK has ``__rte_internal`` marker so we can mark internal APIs and move
+  them to the INTERNAL block in .map. Although these APIs are internal it will
+  break the ABI checks, that is why change is planned for 20.11.
+  The list of internal APIs are mainly ones listed in ``rte_ethdev_driver.h``.
+
+* traffic manager: All traffic manager API's in ``rte_tm.h`` were mistakenly made
+  ABI stable in the v19.11 release. The TM maintainer and other contributors have
+  agreed to keep the TM APIs as experimental in expectation of additional spec
+  improvements. Therefore, all APIs in ``rte_tm.h`` will be marked back as
+  experimental in v20.11 DPDK release. For more details, please see `the thread
+  <https://mails.dpdk.org/archives/dev/2020-April/164970.html>`_.
+
 * cryptodev: support for using IV with all sizes is added, J0 still can
   be used but only when IV length in following structs ``rte_crypto_auth_xform``,
   ``rte_crypto_aead_xform`` is set to zero. When IV length is greater or equal
@@ -104,6 +128,12 @@ Deprecation Notices
   changes will be made to macros, data structures and API functions defined
   in "rte_sched.h". These changes are aligned to improvements suggested in the
   RFC https://mails.dpdk.org/archives/dev/2018-November/120035.html.
+
+* mbuf: ``refcnt_atomic`` member in structures ``rte_mbuf`` and
+  ``rte_mbuf_ext_shared_info`` is of type ``rte_atomic16_t``. Due to adoption
+  of C11 atomic builtins it will be of type ``uint16_t``. ``refcnt_atomic``
+  will be removed in 20.11. It will be replaced with ``refcnt`` of type
+  ``uint16_t``.
 
 * metrics: The function ``rte_metrics_init`` will have a non-void return
   in order to notify errors instead of calling ``rte_exit``.

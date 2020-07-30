@@ -267,9 +267,11 @@ vfio_open_group_fd(int iommu_group_num)
 	struct rte_mp_reply mp_reply = {0};
 	struct timespec ts = {.tv_sec = 5, .tv_nsec = 0};
 	struct vfio_mp_param *p = (struct vfio_mp_param *)mp_req.param;
+	const struct internal_config *internal_conf =
+		eal_get_internal_configuration();
 
 	/* if primary, try to open the group */
-	if (internal_config.process_type == RTE_PROC_PRIMARY) {
+	if (internal_conf->process_type == RTE_PROC_PRIMARY) {
 		/* try regular group format */
 		snprintf(filename, sizeof(filename),
 				 VFIO_GROUP_FMT, iommu_group_num);
@@ -712,7 +714,10 @@ rte_vfio_setup_device(const char *sysfs_base, const char *dev_addr,
 	int vfio_container_fd;
 	int vfio_group_fd;
 	int iommu_group_num;
+	rte_uuid_t vf_token;
 	int i, ret;
+	const struct internal_config *internal_conf =
+		eal_get_internal_configuration();
 
 	/* get group number */
 	ret = rte_vfio_get_group_num(sysfs_base, dev_addr, &iommu_group_num);
@@ -788,7 +793,7 @@ rte_vfio_setup_device(const char *sysfs_base, const char *dev_addr,
 		 * Note this can happen several times with the hotplug
 		 * functionality.
 		 */
-		if (internal_config.process_type == RTE_PROC_PRIMARY &&
+		if (internal_conf->process_type == RTE_PROC_PRIMARY &&
 				vfio_cfg->vfio_active_groups == 1 &&
 				vfio_group_device_count(vfio_group_fd) == 0) {
 			const struct vfio_iommu_type *t;
@@ -891,8 +896,25 @@ rte_vfio_setup_device(const char *sysfs_base, const char *dev_addr,
 		/* we have successfully initialized VFIO, notify user */
 		const struct vfio_iommu_type *t =
 				default_vfio_cfg->vfio_iommu_type;
-		RTE_LOG(NOTICE, EAL, "  using IOMMU type %d (%s)\n",
+		RTE_LOG(INFO, EAL, "  using IOMMU type %d (%s)\n",
 				t->type_id, t->name);
+	}
+
+	rte_eal_vfio_get_vf_token(vf_token);
+
+	/* get a file descriptor for the device with VF token firstly */
+	if (!rte_uuid_is_null(vf_token)) {
+		char vf_token_str[RTE_UUID_STRLEN];
+		char dev[PATH_MAX];
+
+		rte_uuid_unparse(vf_token, vf_token_str, sizeof(vf_token_str));
+		snprintf(dev, sizeof(dev),
+			 "%s vf_token=%s", dev_addr, vf_token_str);
+
+		*vfio_dev_fd = ioctl(vfio_group_fd, VFIO_GROUP_GET_DEVICE_FD,
+				     dev);
+		if (*vfio_dev_fd >= 0)
+			goto dev_get_info;
 	}
 
 	/* get a file descriptor for the device */
@@ -910,6 +932,7 @@ rte_vfio_setup_device(const char *sysfs_base, const char *dev_addr,
 	}
 
 	/* test and setup the device */
+dev_get_info:
 	ret = ioctl(*vfio_dev_fd, VFIO_DEVICE_GET_INFO, device_info);
 	if (ret) {
 		RTE_LOG(ERR, EAL, "  %s cannot get device info, "
@@ -929,9 +952,6 @@ int
 rte_vfio_release_device(const char *sysfs_base, const char *dev_addr,
 		    int vfio_dev_fd)
 {
-	struct vfio_group_status group_status = {
-			.argsz = sizeof(group_status)
-	};
 	struct vfio_config *vfio_cfg;
 	int vfio_group_fd;
 	int iommu_group_num;
@@ -1022,6 +1042,8 @@ rte_vfio_enable(const char *modname)
 	/* initialize group list */
 	int i, j;
 	int vfio_available;
+	const struct internal_config *internal_conf =
+		eal_get_internal_configuration();
 
 	rte_spinlock_recursive_t lock = RTE_SPINLOCK_RECURSIVE_INITIALIZER;
 
@@ -1057,7 +1079,7 @@ rte_vfio_enable(const char *modname)
 		return 0;
 	}
 
-	if (internal_config.process_type == RTE_PROC_PRIMARY) {
+	if (internal_conf->process_type == RTE_PROC_PRIMARY) {
 		/* open a new container */
 		default_vfio_cfg->vfio_container_fd =
 				rte_vfio_get_container_fd();
@@ -1069,7 +1091,7 @@ rte_vfio_enable(const char *modname)
 
 	/* check if we have VFIO driver enabled */
 	if (default_vfio_cfg->vfio_container_fd != -1) {
-		RTE_LOG(NOTICE, EAL, "VFIO support initialized\n");
+		RTE_LOG(INFO, EAL, "VFIO support initialized\n");
 		default_vfio_cfg->vfio_enabled = 1;
 	} else {
 		RTE_LOG(NOTICE, EAL, "VFIO support could not be initialized\n");
@@ -1093,11 +1115,13 @@ vfio_get_default_container_fd(void)
 	struct timespec ts = {.tv_sec = 5, .tv_nsec = 0};
 	struct vfio_mp_param *p = (struct vfio_mp_param *)mp_req.param;
 	int container_fd;
+	const struct internal_config *internal_conf =
+		eal_get_internal_configuration();
 
 	if (default_vfio_cfg->vfio_enabled)
 		return default_vfio_cfg->vfio_container_fd;
 
-	if (internal_config.process_type == RTE_PROC_PRIMARY) {
+	if (internal_conf->process_type == RTE_PROC_PRIMARY) {
 		/* if we were secondary process we would try requesting
 		 * container fd from the primary, but we're the primary
 		 * process so just exit here
@@ -1145,7 +1169,7 @@ vfio_set_iommu_type(int vfio_container_fd)
 		int ret = ioctl(vfio_container_fd, VFIO_SET_IOMMU,
 				t->type_id);
 		if (!ret) {
-			RTE_LOG(NOTICE, EAL, "  using IOMMU type %d (%s)\n",
+			RTE_LOG(INFO, EAL, "  using IOMMU type %d (%s)\n",
 					t->type_id, t->name);
 			return t;
 		}
@@ -1200,10 +1224,12 @@ rte_vfio_get_container_fd(void)
 	struct rte_mp_reply mp_reply = {0};
 	struct timespec ts = {.tv_sec = 5, .tv_nsec = 0};
 	struct vfio_mp_param *p = (struct vfio_mp_param *)mp_req.param;
+	const struct internal_config *internal_conf =
+		eal_get_internal_configuration();
 
 
 	/* if we're in a primary process, try to open the container */
-	if (internal_config.process_type == RTE_PROC_PRIMARY) {
+	if (internal_conf->process_type == RTE_PROC_PRIMARY) {
 		vfio_container_fd = open(VFIO_CONTAINER_PATH, O_RDWR);
 		if (vfio_container_fd < 0) {
 			RTE_LOG(ERR, EAL, "  cannot open VFIO container, "

@@ -55,7 +55,7 @@ extern "C" {
  *
  * As pointed by Java guys, that makes possible to use lock-prefixed
  * instructions to get the same effect as mfence and on most modern HW
- * that gives a better perfomance then using mfence:
+ * that gives a better performance then using mfence:
  * https://shipilev.net/blog/2014/on-the-fence-with-dependencies/
  * Basic idea is to use lock prefixed add with some dummy memory location
  * as the destination. From their experiments 128B(2 cache lines) below
@@ -82,6 +82,22 @@ rte_smp_mb(void)
 #define rte_cio_wmb() rte_compiler_barrier()
 
 #define rte_cio_rmb() rte_compiler_barrier()
+
+/**
+ * Synchronization fence between threads based on the specified memory order.
+ *
+ * On x86 the __atomic_thread_fence(__ATOMIC_SEQ_CST) generates full 'mfence'
+ * which is quite expensive. The optimized implementation of rte_smp_mb is
+ * used instead.
+ */
+static __rte_always_inline void
+rte_atomic_thread_fence(int memory_order)
+{
+	if (memory_order == __ATOMIC_SEQ_CST)
+		rte_smp_mb();
+	else
+		__atomic_thread_fence(memory_order);
+}
 
 /*------------------------- 16 bit atomic operations -------------------------*/
 

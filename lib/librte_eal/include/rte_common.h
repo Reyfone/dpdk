@@ -63,6 +63,11 @@ extern "C" {
 		__GNUC_PATCHLEVEL__)
 #endif
 
+/**
+ * Force alignment
+ */
+#define __rte_aligned(a) __attribute__((__aligned__(a)))
+
 #ifdef RTE_ARCH_STRICT_ALIGN
 typedef uint64_t unaligned_uint64_t __rte_aligned(1);
 typedef uint32_t unaligned_uint32_t __rte_aligned(1);
@@ -72,11 +77,6 @@ typedef uint64_t unaligned_uint64_t;
 typedef uint32_t unaligned_uint32_t;
 typedef uint16_t unaligned_uint16_t;
 #endif
-
-/**
- * Force alignment
- */
-#define __rte_aligned(a) __attribute__((__aligned__(a)))
 
 /**
  * Force a structure to be packed
@@ -102,6 +102,15 @@ typedef uint16_t unaligned_uint16_t;
  * short definition to mark a function parameter unused
  */
 #define __rte_unused __attribute__((__unused__))
+
+/**
+ * Mark pointer as restricted with regard to pointer aliasing.
+ */
+#if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 199901L
+#define __rte_restrict __restrict
+#else
+#define __rte_restrict restrict
+#endif
 
 /**
  * definition to mark a variable or function parameter as used so
@@ -295,7 +304,7 @@ static void __attribute__((destructor(RTE_PRIO(prio)), used)) func(void)
  * than the first parameter.
  */
 #define RTE_ALIGN_MUL_CEIL(v, mul) \
-	(((v + (typeof(v))(mul) - 1) / ((typeof(v))(mul))) * (typeof(v))(mul))
+	((((v) + (typeof(v))(mul) - 1) / ((typeof(v))(mul))) * (typeof(v))(mul))
 
 /**
  * Macro to align a value to the multiple of given value. The resultant
@@ -303,7 +312,7 @@ static void __attribute__((destructor(RTE_PRIO(prio)), used)) func(void)
  * than the first parameter.
  */
 #define RTE_ALIGN_MUL_FLOOR(v, mul) \
-	((v / ((typeof(v))(mul))) * (typeof(v))(mul))
+	(((v) / ((typeof(v))(mul))) * (typeof(v))(mul))
 
 /**
  * Macro to align value to the nearest multiple of the given value.
@@ -314,7 +323,7 @@ static void __attribute__((destructor(RTE_PRIO(prio)), used)) func(void)
 	({							\
 		typeof(v) ceil = RTE_ALIGN_MUL_CEIL(v, mul);	\
 		typeof(v) floor = RTE_ALIGN_MUL_FLOOR(v, mul);	\
-		(ceil - v) > (v - floor) ? floor : ceil;	\
+		(ceil - (v)) > ((v) - floor) ? floor : ceil;	\
 	})
 
 /**
@@ -409,7 +418,7 @@ __extension__ typedef uint64_t RTE_MARKER64[0];
  *    The combined value.
  */
 static inline uint32_t
-rte_combine32ms1b(register uint32_t x)
+rte_combine32ms1b(uint32_t x)
 {
 	x |= x >> 1;
 	x |= x >> 2;
@@ -431,7 +440,7 @@ rte_combine32ms1b(register uint32_t x)
  *    The combined value.
  */
 static inline uint64_t
-rte_combine64ms1b(register uint64_t v)
+rte_combine64ms1b(uint64_t v)
 {
 	v |= v >> 1;
 	v |= v >> 2;

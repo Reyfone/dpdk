@@ -16,6 +16,7 @@
 #include "base/hinic_pmd_hwif.h"
 #include "base/hinic_pmd_wq.h"
 #include "base/hinic_pmd_nicio.h"
+#include "base/hinic_pmd_niccfg.h"
 #include "hinic_pmd_ethdev.h"
 #include "hinic_pmd_tx.h"
 
@@ -312,6 +313,8 @@ static inline struct rte_mbuf *hinic_copy_tx_mbuf(struct hinic_nic_dev *nic_dev,
 		mbuf = mbuf->next;
 	}
 
+	dst_mbuf->pkt_len = dst_mbuf->data_len;
+
 	return dst_mbuf;
 }
 
@@ -333,7 +336,16 @@ static inline bool hinic_mbuf_dma_map_sge(struct hinic_txq *txq,
 		i = 0;
 		for (sge_idx = sges; (u64)sge_idx <= txq->sq_bot_sge_addr;
 		     sge_idx++) {
+			if (unlikely(mbuf == NULL)) {
+				txq->txq_stats.mbuf_null++;
+				return false;
+			}
+
 			dma_addr = rte_mbuf_data_iova(mbuf);
+			if (unlikely(mbuf->data_len == 0)) {
+				txq->txq_stats.sge_len0++;
+				return false;
+			}
 			hinic_set_sge((struct hinic_sge *)sge_idx, dma_addr,
 				      mbuf->data_len);
 			mbuf = mbuf->next;
@@ -344,7 +356,16 @@ static inline bool hinic_mbuf_dma_map_sge(struct hinic_txq *txq,
 		sge_idx = (struct hinic_sq_bufdesc *)
 				((void *)txq->sq_head_addr);
 		for (; i < nb_segs; i++) {
+			if (unlikely(mbuf == NULL)) {
+				txq->txq_stats.mbuf_null++;
+				return false;
+			}
+
 			dma_addr = rte_mbuf_data_iova(mbuf);
+			if (unlikely(mbuf->data_len == 0)) {
+				txq->txq_stats.sge_len0++;
+				return false;
+			}
 			hinic_set_sge((struct hinic_sge *)sge_idx, dma_addr,
 				      mbuf->data_len);
 			mbuf = mbuf->next;
@@ -356,7 +377,16 @@ static inline bool hinic_mbuf_dma_map_sge(struct hinic_txq *txq,
 	} else {
 		/* wqe is in continuous space */
 		for (i = 0; i < nb_segs; i++) {
+			if (unlikely(mbuf == NULL)) {
+				txq->txq_stats.mbuf_null++;
+				return false;
+			}
+
 			dma_addr = rte_mbuf_data_iova(mbuf);
+			if (unlikely(mbuf->data_len == 0)) {
+				txq->txq_stats.sge_len0++;
+				return false;
+			}
 			hinic_set_sge((struct hinic_sge *)sge_idx, dma_addr,
 				      mbuf->data_len);
 			mbuf = mbuf->next;
@@ -377,6 +407,10 @@ static inline bool hinic_mbuf_dma_map_sge(struct hinic_txq *txq,
 
 		/* deal with the last mbuf */
 		dma_addr = rte_mbuf_data_iova(mbuf);
+		if (unlikely(mbuf->data_len == 0)) {
+			txq->txq_stats.sge_len0++;
+			return false;
+		}
 		hinic_set_sge((struct hinic_sge *)sge_idx, dma_addr,
 			      mbuf->data_len);
 		if (unlikely(sqe_info->around))
@@ -421,7 +455,7 @@ static inline bool hinic_is_tso_sge_valid(struct rte_mbuf *mbuf,
 					  *poff_info,
 					  struct hinic_wqe_info *sqe_info)
 {
-	u32 total_len, limit_len, checked_len, left_len;
+	u32 total_len, limit_len, checked_len, left_len, adjust_mss;
 	u32 i, first_mss_sges, left_sges;
 	struct rte_mbuf *mbuf_head, *mbuf_pre;
 
@@ -431,7 +465,9 @@ static inline bool hinic_is_tso_sge_valid(struct rte_mbuf *mbuf,
 	/* tso sge number validation */
 	if (unlikely(left_sges >= HINIC_NONTSO_PKT_MAX_SGE)) {
 		checked_len = 0;
-		limit_len = mbuf->tso_segsz + poff_info->payload_offset;
+		adjust_mss = mbuf->tso_segsz >= TX_MSS_MIN ?
+				mbuf->tso_segsz : TX_MSS_MIN;
+		limit_len = adjust_mss + poff_info->payload_offset;
 		first_mss_sges = HINIC_NONTSO_PKT_MAX_SGE;
 
 		/* each continues 17 mbufs segmust do one check */
@@ -445,7 +481,7 @@ static inline bool hinic_is_tso_sge_valid(struct rte_mbuf *mbuf,
 				mbuf_pre = mbuf;
 				mbuf = mbuf->next;
 				if (total_len >= limit_len) {
-					limit_len = mbuf_head->tso_segsz;
+					limit_len = adjust_mss;
 					break;
 				}
 			}
@@ -1185,7 +1221,8 @@ void hinic_free_all_tx_resources(struct rte_eth_dev *eth_dev)
 				HINIC_ETH_DEV_TO_PRIVATE_NIC_DEV(eth_dev);
 
 	for (q_id = 0; q_id < nic_dev->num_sq; q_id++) {
-		eth_dev->data->tx_queues[q_id] = NULL;
+		if (eth_dev->data->tx_queues != NULL)
+			eth_dev->data->tx_queues[q_id] = NULL;
 
 		if (nic_dev->txqs[q_id] == NULL)
 			continue;

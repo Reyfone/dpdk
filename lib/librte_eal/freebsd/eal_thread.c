@@ -20,13 +20,10 @@
 #include <rte_per_lcore.h>
 #include <rte_eal.h>
 #include <rte_lcore.h>
+#include <rte_eal_trace.h>
 
 #include "eal_private.h"
 #include "eal_thread.h"
-
-RTE_DEFINE_PER_LCORE(unsigned, _lcore_id) = LCORE_ID_ANY;
-RTE_DEFINE_PER_LCORE(unsigned, _socket_id) = (unsigned)SOCKET_ID_ANY;
-RTE_DEFINE_PER_LCORE(rte_cpuset_t, _cpuset);
 
 /*
  * Send a message to a slave lcore identified by slave_id to call a
@@ -40,9 +37,10 @@ rte_eal_remote_launch(int (*f)(void *), void *arg, unsigned slave_id)
 	char c = 0;
 	int m2s = lcore_config[slave_id].pipe_master2slave[1];
 	int s2m = lcore_config[slave_id].pipe_slave2master[0];
+	int rc = -EBUSY;
 
 	if (lcore_config[slave_id].state != WAIT)
-		return -EBUSY;
+		goto finish;
 
 	lcore_config[slave_id].f = f;
 	lcore_config[slave_id].arg = arg;
@@ -62,30 +60,10 @@ rte_eal_remote_launch(int (*f)(void *), void *arg, unsigned slave_id)
 	if (n <= 0)
 		rte_panic("cannot read on configuration pipe\n");
 
-	return 0;
-}
-
-/* set affinity for current thread */
-static int
-eal_thread_set_affinity(void)
-{
-	unsigned lcore_id = rte_lcore_id();
-
-	/* acquire system unique id  */
-	rte_gettid();
-
-	/* update EAL thread core affinity */
-	return rte_thread_set_affinity(&lcore_config[lcore_id].cpuset);
-}
-
-void eal_thread_init_master(unsigned lcore_id)
-{
-	/* set the lcore ID in per-lcore memory area */
-	RTE_PER_LCORE(_lcore_id) = lcore_id;
-
-	/* set CPU affinity */
-	if (eal_thread_set_affinity() < 0)
-		rte_panic("cannot set affinity\n");
+	rc = 0;
+finish:
+	rte_eal_trace_thread_remote_launch(f, arg, slave_id, rc);
+	return rc;
 }
 
 /* main loop of threads */
@@ -112,17 +90,13 @@ eal_thread_loop(__rte_unused void *arg)
 	m2s = lcore_config[lcore_id].pipe_master2slave[0];
 	s2m = lcore_config[lcore_id].pipe_slave2master[1];
 
-	/* set the lcore ID in per-lcore memory area */
-	RTE_PER_LCORE(_lcore_id) = lcore_id;
+	__rte_thread_init(lcore_id, &lcore_config[lcore_id].cpuset);
 
-	/* set CPU affinity */
-	if (eal_thread_set_affinity() < 0)
-		rte_panic("cannot set affinity\n");
-
-	ret = eal_thread_dump_affinity(cpuset, sizeof(cpuset));
-
+	ret = eal_thread_dump_current_affinity(cpuset, sizeof(cpuset));
 	RTE_LOG(DEBUG, EAL, "lcore %u is ready (tid=%p;cpuset=[%s%s])\n",
 		lcore_id, thread_id, cpuset, ret == 0 ? "" : "...");
+
+	rte_eal_trace_thread_lcore_ready(lcore_id, cpuset);
 
 	/* read on our pipe to get commands */
 	while (1) {
@@ -174,4 +148,13 @@ int rte_thread_setname(pthread_t id, const char *name)
 	/* this BSD function returns no error */
 	pthread_set_name_np(id, name);
 	return 0;
+}
+
+int rte_thread_getname(pthread_t id, char *name, size_t len)
+{
+	RTE_SET_USED(id);
+	RTE_SET_USED(name);
+	RTE_SET_USED(len);
+
+	return -ENOTSUP;
 }

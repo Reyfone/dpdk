@@ -1,5 +1,6 @@
 aarch32
 aarch64
+AltiVec
 API
 Arm
 armv7
@@ -7,6 +8,7 @@ armv8
 BAR
 CRC
 DCB
+DevX
 DMA
 EEPROM
 FDIR
@@ -15,7 +17,9 @@ FW
 GENEVE
 HW
 IO
+IOTLB
 IOVA
+IPsec
 L2
 L3
 L4
@@ -29,14 +33,16 @@ MSS
 MTU
 NEON
 NIC
-NUMA
 null
+NUMA
 NVGRE
 NVM
 PCI
 PF
 PHY
 PMD
+PPPoE
+PVID
 RDMA
 RETA
 RSS
@@ -51,6 +57,7 @@ TTL
 Tx
 UDP
 vDPA
+Verbs
 VF
 VFIO
 VLAN

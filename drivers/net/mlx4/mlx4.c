@@ -49,6 +49,10 @@
 #include "mlx4_rxtx.h"
 #include "mlx4_utils.h"
 
+#ifdef MLX4_GLUE
+const struct mlx4_glue *mlx4_glue;
+#endif
+
 static const char *MZ_MLX4_PMD_SHARED_DATA = "mlx4_pmd_shared_data";
 
 /* Shared memory between primary and secondary processes. */
@@ -59,9 +63,6 @@ static rte_spinlock_t mlx4_shared_data_lock = RTE_SPINLOCK_INITIALIZER;
 
 /* Process local data for secondary processes. */
 static struct mlx4_local_data mlx4_local_data;
-
-/** Driver-specific log messages type. */
-int mlx4_logtype;
 
 /** Configuration structure for device arguments. */
 struct mlx4_conf {
@@ -488,7 +489,6 @@ mlx4_ibv_device_to_pci_addr(const struct ibv_device *device,
 			   &pci_addr->bus,
 			   &pci_addr->devid,
 			   &pci_addr->function) == 4) {
-			ret = 0;
 			break;
 		}
 	}
@@ -1050,14 +1050,13 @@ mlx4_pci_probe(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		eth_dev->dev_ops = &mlx4_dev_ops;
 #ifdef HAVE_IBV_MLX4_BUF_ALLOCATORS
 		/* Hint libmlx4 to use PMD allocator for data plane resources */
-		struct mlx4dv_ctx_allocators alctr = {
-			.alloc = &mlx4_alloc_verbs_buf,
-			.free = &mlx4_free_verbs_buf,
-			.data = priv,
-		};
 		err = mlx4_glue->dv_set_context_attr
 			(ctx, MLX4DV_SET_CTX_ATTR_BUF_ALLOCATORS,
-			 (void *)((uintptr_t)&alctr));
+			 (void *)((uintptr_t)&(struct mlx4dv_ctx_allocators){
+				 .alloc = &mlx4_alloc_verbs_buf,
+				 .free = &mlx4_free_verbs_buf,
+				 .data = priv,
+			}));
 		if (err)
 			WARN("Verbs external allocator is not supported");
 		else
@@ -1277,16 +1276,14 @@ glue_error:
 
 #endif
 
+/* Initialize driver log type. */
+RTE_LOG_REGISTER(mlx4_logtype, pmd.net.mlx4, NOTICE)
+
 /**
  * Driver initialization routine.
  */
 RTE_INIT(rte_mlx4_pmd_init)
 {
-	/* Initialize driver log type. */
-	mlx4_logtype = rte_log_register("pmd.net.mlx4");
-	if (mlx4_logtype >= 0)
-		rte_log_set_level(mlx4_logtype, RTE_LOG_NOTICE);
-
 	/*
 	 * MLX4_DEVICE_FATAL_CLEANUP tells ibv_destroy functions we
 	 * want to get success errno value in case of calling them

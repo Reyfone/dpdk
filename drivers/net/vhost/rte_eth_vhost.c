@@ -18,7 +18,7 @@
 
 #include "rte_eth_vhost.h"
 
-static int vhost_logtype;
+RTE_LOG_REGISTER(vhost_logtype, pmd.net.vhost, NOTICE);
 
 #define VHOST_LOG(level, ...) \
 	rte_log(RTE_LOG_ ## level, vhost_logtype, __VA_ARGS__)
@@ -32,6 +32,8 @@ enum {VIRTIO_RXQ, VIRTIO_TXQ, VIRTIO_QNUM};
 #define ETH_VHOST_IOMMU_SUPPORT		"iommu-support"
 #define ETH_VHOST_POSTCOPY_SUPPORT	"postcopy-support"
 #define ETH_VHOST_VIRTIO_NET_F_HOST_TSO "tso"
+#define ETH_VHOST_LINEAR_BUF  "linear-buffer"
+#define ETH_VHOST_EXT_BUF  "ext-buffer"
 #define VHOST_MAX_PKT_BURST 32
 
 static const char *valid_arguments[] = {
@@ -42,6 +44,8 @@ static const char *valid_arguments[] = {
 	ETH_VHOST_IOMMU_SUPPORT,
 	ETH_VHOST_POSTCOPY_SUPPORT,
 	ETH_VHOST_VIRTIO_NET_F_HOST_TSO,
+	ETH_VHOST_LINEAR_BUF,
+	ETH_VHOST_EXT_BUF,
 	NULL
 };
 
@@ -90,6 +94,7 @@ struct vhost_queue {
 	struct rte_mempool *mb_pool;
 	uint16_t port;
 	uint16_t virtqueue_id;
+	bool intr_en;
 	struct vhost_stats stats;
 };
 
@@ -542,6 +547,8 @@ eth_rxq_intr_enable(struct rte_eth_dev *dev, uint16_t qid)
 	rte_vhost_enable_guest_notification(vq->vid, (qid << 1) + 1, 1);
 	rte_wmb();
 
+	vq->intr_en = true;
+
 	return ret;
 }
 
@@ -566,6 +573,8 @@ eth_rxq_intr_disable(struct rte_eth_dev *dev, uint16_t qid)
 	VHOST_LOG(INFO, "Disable interrupt for rxq%d\n", qid);
 	rte_vhost_enable_guest_notification(vq->vid, (qid << 1) + 1, 0);
 	rte_wmb();
+
+	vq->intr_en = false;
 
 	return 0;
 }
@@ -827,6 +836,45 @@ destroy_device(int vid)
 }
 
 static int
+vring_conf_update(int vid, struct rte_eth_dev *eth_dev, uint16_t vring_id)
+{
+	struct rte_eth_conf *dev_conf = &eth_dev->data->dev_conf;
+	struct pmd_internal *internal = eth_dev->data->dev_private;
+	struct rte_vhost_vring vring;
+	struct vhost_queue *vq;
+	int rx_idx = vring_id % 2 ? (vring_id - 1) >> 1 : -1;
+	int ret = 0;
+
+	/*
+	 * The vring kickfd may be changed after the new device notification.
+	 * Update it when the vring state is updated.
+	 */
+	if (rx_idx >= 0 && rx_idx < eth_dev->data->nb_rx_queues &&
+	    rte_atomic32_read(&internal->dev_attached) &&
+	    rte_atomic32_read(&internal->started) &&
+	    dev_conf->intr_conf.rxq) {
+		vq = eth_dev->data->rx_queues[rx_idx];
+		ret = rte_vhost_get_vhost_vring(vid, vring_id, &vring);
+		if (!ret) {
+			if (vring.kickfd !=
+			    eth_dev->intr_handle->efds[rx_idx]) {
+				VHOST_LOG(INFO,
+					  "kickfd for rxq-%d was changed.\n",
+					  rx_idx);
+				eth_dev->intr_handle->efds[rx_idx] =
+								   vring.kickfd;
+			}
+
+			rte_vhost_enable_guest_notification(vid, vring_id,
+							    vq->intr_en);
+			rte_wmb();
+		}
+	}
+
+	return ret;
+}
+
+static int
 vring_state_changed(int vid, uint16_t vring, int enable)
 {
 	struct rte_vhost_vring_state *state;
@@ -844,6 +892,11 @@ vring_state_changed(int vid, uint16_t vring, int enable)
 	eth_dev = list->eth_dev;
 	/* won't be NULL */
 	state = vring_states[eth_dev->data->port_id];
+
+	if (enable && vring_conf_update(vid, eth_dev, vring))
+		VHOST_LOG(INFO, "Failed to update vring-%d configuration.\n",
+			  (int)vring);
+
 	rte_spinlock_lock(&state->lock);
 	if (state->cur[vring] == enable) {
 		rte_spinlock_unlock(&state->lock);
@@ -1065,16 +1118,14 @@ eth_dev_close(struct rte_eth_dev *dev)
 
 	eth_dev_stop(dev);
 
-	rte_vhost_driver_unregister(internal->iface_name);
-
 	list = find_internal_resource(internal->iface_name);
-	if (!list)
-		return;
-
-	pthread_mutex_lock(&internal_list_lock);
-	TAILQ_REMOVE(&internal_list, list, next);
-	pthread_mutex_unlock(&internal_list_lock);
-	rte_free(list);
+	if (list) {
+		rte_vhost_driver_unregister(internal->iface_name);
+		pthread_mutex_lock(&internal_list_lock);
+		TAILQ_REMOVE(&internal_list, list, next);
+		pthread_mutex_unlock(&internal_list_lock);
+		rte_free(list);
+	}
 
 	if (dev->data->rx_queues)
 		for (i = 0; i < dev->data->nb_rx_queues; i++)
@@ -1331,6 +1382,8 @@ eth_dev_vhost_create(struct rte_vdev_device *dev, char *iface_name,
 	internal->disable_flags = disable_flags;
 	data->dev_link = pmd_link;
 	data->dev_flags = RTE_ETH_DEV_INTR_LSC | RTE_ETH_DEV_CLOSE_REMOVE;
+	data->promiscuous = 1;
+	data->all_multicast = 1;
 
 	eth_dev->dev_ops = &ops;
 
@@ -1391,6 +1444,8 @@ rte_pmd_vhost_probe(struct rte_vdev_device *dev)
 	int iommu_support = 0;
 	int postcopy_support = 0;
 	int tso = 0;
+	int linear_buf = 0;
+	int ext_buf = 0;
 	struct rte_eth_dev *eth_dev;
 	const char *name = rte_vdev_device_name(dev);
 
@@ -1488,6 +1543,28 @@ rte_pmd_vhost_probe(struct rte_vdev_device *dev)
 		}
 	}
 
+	if (rte_kvargs_count(kvlist, ETH_VHOST_LINEAR_BUF) == 1) {
+		ret = rte_kvargs_process(kvlist,
+				ETH_VHOST_LINEAR_BUF,
+				&open_int, &linear_buf);
+		if (ret < 0)
+			goto out_free;
+
+		if (linear_buf == 1)
+			flags |= RTE_VHOST_USER_LINEARBUF_SUPPORT;
+	}
+
+	if (rte_kvargs_count(kvlist, ETH_VHOST_EXT_BUF) == 1) {
+		ret = rte_kvargs_process(kvlist,
+				ETH_VHOST_EXT_BUF,
+				&open_int, &ext_buf);
+		if (ret < 0)
+			goto out_free;
+
+		if (ext_buf == 1)
+			flags |= RTE_VHOST_USER_EXTBUF_SUPPORT;
+	}
+
 	if (dev->device.numa_node == SOCKET_ID_ANY)
 		dev->device.numa_node = rte_socket_id();
 
@@ -1539,11 +1616,6 @@ RTE_PMD_REGISTER_PARAM_STRING(net_vhost,
 	"dequeue-zero-copy=<0|1> "
 	"iommu-support=<0|1> "
 	"postcopy-support=<0|1> "
-	"tso=<0|1>");
-
-RTE_INIT(vhost_init_log)
-{
-	vhost_logtype = rte_log_register("pmd.net.vhost");
-	if (vhost_logtype >= 0)
-		rte_log_set_level(vhost_logtype, RTE_LOG_NOTICE);
-}
+	"tso=<0|1> "
+	"linear-buffer=<0|1> "
+	"ext-buffer=<0|1>");

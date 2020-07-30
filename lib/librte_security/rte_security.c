@@ -108,10 +108,11 @@ rte_security_set_pkt_metadata(struct rte_security_ctx *instance,
 			      struct rte_mbuf *m, void *params)
 {
 #ifdef RTE_DEBUG
-	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, set_pkt_metadata, -EINVAL,
-			-ENOTSUP);
 	RTE_PTR_OR_ERR_RET(sess, -EINVAL);
+	RTE_PTR_OR_ERR_RET(instance, -EINVAL);
+	RTE_PTR_OR_ERR_RET(instance->ops, -EINVAL);
 #endif
+	RTE_FUNC_PTR_OR_ERR_RET(*instance->ops->set_pkt_metadata, -ENOTSUP);
 	return instance->ops->set_pkt_metadata(instance->device,
 					       sess, m, params);
 }
@@ -122,8 +123,10 @@ rte_security_get_userdata(struct rte_security_ctx *instance, uint64_t md)
 	void *userdata = NULL;
 
 #ifdef RTE_DEBUG
-	RTE_PTR_CHAIN3_OR_ERR_RET(instance, ops, get_userdata, NULL, NULL);
+	RTE_PTR_OR_ERR_RET(instance, NULL);
+	RTE_PTR_OR_ERR_RET(instance->ops, NULL);
 #endif
+	RTE_FUNC_PTR_OR_ERR_RET(*instance->ops->get_userdata, NULL);
 	if (instance->ops->get_userdata(instance->device, md, &userdata))
 		return NULL;
 
@@ -169,6 +172,11 @@ rte_security_capability_get(struct rte_security_ctx *instance,
 			} else if (idx->protocol == RTE_SECURITY_PROTOCOL_PDCP) {
 				if (capability->pdcp.domain ==
 							idx->pdcp.domain)
+					return capability;
+			} else if (idx->protocol ==
+						RTE_SECURITY_PROTOCOL_DOCSIS) {
+				if (capability->docsis.direction ==
+							idx->docsis.direction)
 					return capability;
 			}
 		}

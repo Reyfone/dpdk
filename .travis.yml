@@ -7,7 +7,8 @@ cache:
     - reference
 
 dist: focal
-virt: lxd
+#virt: lxd
+virt: vm
 group: edge
 
 os: linux
